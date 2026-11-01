@@ -1,0 +1,5 @@
+.env
+/storage/
+/coverage.out
+/tmp/
+*.test
