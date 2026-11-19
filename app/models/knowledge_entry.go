@@ -8,8 +8,8 @@ type KnowledgeEntry struct {
 	SourceID   uint            `json:"source_id" gorm:"not null;default:0;index;comment:资料来源ID"`
 	Question   string          `json:"question" gorm:"not null;size:1000;comment:知识标题或问题"`
 	Answer     string          `json:"answer" gorm:"not null;type:text;comment:审核答案或原始文档分块"`
-	Keywords   string          `json:"keywords" gorm:"not null;default:'';type:text;comment:关键词与相似问法"`
-	Conditions string          `json:"conditions" gorm:"not null;default:'';type:text;comment:知识适用条件"`
+	Keywords   string          `json:"keywords" gorm:"not null;type:text;comment:关键词与相似问法"`
+	Conditions string          `json:"conditions" gorm:"not null;type:text;comment:知识适用条件"`
 	Locale     string          `json:"locale" gorm:"not null;size:16;default:zh;comment:知识语言"`
 	ReplyMode  string          `json:"reply_mode" gorm:"not null;size:16;default:reference;comment:fixed固定原文 reference依据知识回答"`
 	Status     string          `json:"status" gorm:"not null;size:16;default:draft;index:idx_knowledge_scope,priority:2;comment:draft待审核 published已发布 disabled停用"`

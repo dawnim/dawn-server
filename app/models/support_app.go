@@ -12,7 +12,7 @@ type SupportApp struct {
 	Status        int             `json:"status" gorm:"not null;default:1;comment:状态:1启用 2停用"`
 	TelegramBotID *int64          `json:"telegram_bot_id" gorm:"uniqueIndex;comment:应用独占的Telegram机器人ID"`
 	Config        json.RawMessage `json:"config" gorm:"type:json;comment:入口、模型、知识、工具与接待配置"`
-	Secrets       string          `json:"-" gorm:"not null;default:'';type:text;comment:加密保存的模型、身份与机器人密钥"`
+	Secrets       string          `json:"-" gorm:"not null;type:text;comment:加密保存的模型、身份与机器人密钥"`
 	Revision      uint            `json:"revision" gorm:"not null;default:1;comment:配置并发控制版本"`
 }
 

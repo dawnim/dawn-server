@@ -19,7 +19,7 @@ type AIRun struct {
 	DeadlineAt     int64           `json:"deadline_at" gorm:"not null;default:0;comment:整体截止时间(Unix毫秒)"`
 	Input          json.RawMessage `json:"input" gorm:"type:json;comment:经白名单处理的执行输入"`
 	Output         json.RawMessage `json:"output" gorm:"type:json;comment:执行结果、来源与恢复检查点"`
-	Error          string          `json:"error" gorm:"not null;default:'';type:text;comment:脱敏执行错误"`
+	Error          string          `json:"error" gorm:"not null;type:text;comment:脱敏执行错误"`
 	CreatedAt      int64           `json:"created_at" gorm:"not null;autoCreateTime:milli"`
 	UpdatedAt      int64           `json:"updated_at" gorm:"not null;autoUpdateTime:milli"`
 }

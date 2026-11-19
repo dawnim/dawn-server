@@ -283,7 +283,7 @@ type UserTraits struct {
 	VerifiedAt       int64           `json:"verified_at" gorm:"not null;default:0;comment:最近身份验证时间(Unix毫秒)"`
 	Attributes       json.RawMessage `json:"attributes" gorm:"type:json;comment:接入方提交的扩展资料"`
 	Observed         json.RawMessage `json:"observed" gorm:"type:json;comment:访问环境与近期浏览轨迹"`
-	Remark           string          `json:"remark" gorm:"not null;default:'';type:text;comment:应用内客服备注"`
+	Remark           string          `json:"remark" gorm:"not null;type:text;comment:应用内客服备注"`
 	FirstSeenAt      int64           `json:"first_seen_at" gorm:"not null;autoCreateTime:milli;comment:首次访问时间(Unix毫秒)"`
 	LastSeenAt       int64           `json:"last_seen_at" gorm:"not null;autoUpdateTime:milli;comment:最近访问时间(Unix毫秒)"`
 }
@@ -300,7 +300,7 @@ type SupportApp struct {
 	Status        int             `json:"status" gorm:"not null;default:1;comment:状态:1启用 2停用"`
 	TelegramBotID *int64          `json:"telegram_bot_id" gorm:"uniqueIndex;comment:应用独占的Telegram机器人ID"`
 	Config        json.RawMessage `json:"config" gorm:"type:json;comment:入口、模型、知识、工具与接待配置"`
-	Secrets       string          `json:"-" gorm:"not null;default:'';type:text;comment:加密保存的模型、身份与机器人密钥"`
+	Secrets       string          `json:"-" gorm:"not null;type:text;comment:加密保存的模型、身份与机器人密钥"`
 	Revision      uint            `json:"revision" gorm:"not null;default:1;comment:配置并发控制版本"`
 }
 
@@ -314,7 +314,7 @@ type KnowledgeSource struct {
 	Content     string `json:"content" gorm:"not null;type:text;comment:原始资料或来源地址"`
 	Status      string `json:"status" gorm:"not null;size:24;default:draft;comment:draft待处理 processing处理中 completed已处理 failed失败"`
 	ContentHash string `json:"content_hash" gorm:"not null;default:'';size:64;comment:已处理内容SHA256"`
-	Error       string `json:"error" gorm:"not null;default:'';type:text;comment:可公开的处理错误"`
+	Error       string `json:"error" gorm:"not null;type:text;comment:可公开的处理错误"`
 }
 
 func (KnowledgeSource) TableName() string { return "knowledge_sources" }
@@ -325,8 +325,8 @@ type KnowledgeEntry struct {
 	SourceID   uint            `json:"source_id" gorm:"not null;default:0;index;comment:资料来源ID"`
 	Question   string          `json:"question" gorm:"not null;size:1000;comment:知识标题或问题"`
 	Answer     string          `json:"answer" gorm:"not null;type:text;comment:审核答案或原始文档分块"`
-	Keywords   string          `json:"keywords" gorm:"not null;default:'';type:text;comment:关键词与相似问法"`
-	Conditions string          `json:"conditions" gorm:"not null;default:'';type:text;comment:知识适用条件"`
+	Keywords   string          `json:"keywords" gorm:"not null;type:text;comment:关键词与相似问法"`
+	Conditions string          `json:"conditions" gorm:"not null;type:text;comment:知识适用条件"`
 	Locale     string          `json:"locale" gorm:"not null;size:16;default:zh;comment:知识语言"`
 	ReplyMode  string          `json:"reply_mode" gorm:"not null;size:16;default:reference;comment:fixed固定原文 reference依据知识回答"`
 	Status     string          `json:"status" gorm:"not null;size:16;default:draft;index:idx_knowledge_scope,priority:2;comment:draft待审核 published已发布 disabled停用"`
@@ -354,7 +354,7 @@ type AIRun struct {
 	DeadlineAt     int64           `json:"deadline_at" gorm:"not null;default:0;comment:整体截止时间(Unix毫秒)"`
 	Input          json.RawMessage `json:"input" gorm:"type:json;comment:经白名单处理的执行输入"`
 	Output         json.RawMessage `json:"output" gorm:"type:json;comment:执行结果、来源与恢复检查点"`
-	Error          string          `json:"error" gorm:"not null;default:'';type:text;comment:脱敏执行错误"`
+	Error          string          `json:"error" gorm:"not null;type:text;comment:脱敏执行错误"`
 	CreatedAt      int64           `json:"created_at" gorm:"not null;autoCreateTime:milli"`
 	UpdatedAt      int64           `json:"updated_at" gorm:"not null;autoUpdateTime:milli"`
 }
@@ -369,7 +369,7 @@ type SupportSession struct {
 	Status             string `json:"status" gorm:"not null;size:20;default:waiting;index:idx_support_session_status;comment:waiting排队 active接待 closing_pending等待客户确认 closed结束 cancelled取消排队"`
 	Version            uint   `json:"version" gorm:"not null;default:1;comment:接待状态版本"`
 	Rating             *int   `json:"rating" gorm:"comment:评分1差评 2一般 3好评:空表示未评价"`
-	Comment            string `json:"comment" gorm:"not null;default:'';type:text;comment:客户评价"`
+	Comment            string `json:"comment" gorm:"not null;type:text;comment:客户评价"`
 	StartedAt          int64  `json:"started_at" gorm:"not null;default:0;comment:首次接待时间(Unix毫秒)，0表示尚未接待"`
 	OfflineSince       int64  `json:"offline_since" gorm:"not null;default:0;comment:持续离线起点(Unix毫秒)，0表示未离线"`
 	LastOnlineAt       int64  `json:"last_online_at" gorm:"not null;default:0;comment:最近确认在线时间(Unix毫秒)"`
