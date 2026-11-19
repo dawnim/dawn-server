@@ -44,7 +44,9 @@ func auditJSON(data []byte) string {
 
 func RecordAudit(db *gorm.DB, c *gin.Context, kind string, status int, message string) {
 	entry := models.Log{Sender: c.GetString("admin.mail.sender"), Recipient: c.GetString("admin.mail.recipient"), Kind: kind, Method: c.Request.Method, Path: c.Request.URL.Path, IP: c.ClientIP(), Status: status, Message: message, Duration: time.Since(c.GetTime("dawn.started")).Milliseconds(), RequestData: c.GetString("admin.audit.request"), ResponseData: c.GetString("admin.audit.response")}
-	entry.CountryCode, entry.Location, _ = geoip.Lookup(entry.IP)
+	if location, err := geoip.Lookup(c.Request.Context(), entry.IP); err == nil {
+		entry.CountryCode, entry.Location = location.CountryCode, location.Location
+	}
 	if v, ok := c.Get("dawn.actor"); ok {
 		entry.UserID = v.(*admin.Actor).User.ID
 		entry.Username = v.(*admin.Actor).User.Username
@@ -58,8 +60,9 @@ func RecordAudit(db *gorm.DB, c *gin.Context, kind string, status int, message s
 func Audit(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Set("dawn.started", time.Now())
-		write := c.Request.Method != http.MethodGet && c.Request.Method != http.MethodOptions
+		write := c.Request.Method != http.MethodGet && c.Request.Method != http.MethodOptions && !strings.HasSuffix(c.Request.URL.Path, "/support-presence/heartbeats")
 		private := strings.Contains(c.Request.URL.Path, "/chat-conversations") || strings.Contains(c.Request.URL.Path, "/auth/") || strings.Contains(c.Request.URL.Path, "/users") || strings.HasSuffix(c.Request.URL.Path, "/settings") || strings.Contains(c.Request.URL.Path, "/attachments") || strings.Contains(c.Request.URL.Path, "/uploads") || strings.HasSuffix(c.Request.URL.Path, "/cache/value")
+		private = private || strings.Contains(c.Request.URL.Path, "/support") || strings.Contains(c.Request.URL.Path, "/api/account") || strings.Contains(c.Request.URL.Path, "/members") || strings.Contains(c.Request.URL.Path, "/telegram") || strings.Contains(c.Request.URL.Path, "/knowledge")
 		var writer *auditWriter
 		if write && !private {
 			query, _ := json.Marshal(c.Request.URL.Query())

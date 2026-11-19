@@ -32,7 +32,10 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-type uploadInput struct {
+// UploadInput describes a file and its owner for the shared upload pipeline.
+type UploadInput struct {
+	Scope      string `json:"-"`
+	OwnerID    uint   `json:"-"`
 	Name       string `json:"name" binding:"required,max=255"`
 	MD5        string `json:"md5" binding:"required,len=32,hexadecimal"`
 	SHA256     string `json:"sha256" binding:"required,len=64,hexadecimal"`
@@ -40,14 +43,15 @@ type uploadInput struct {
 	CategoryID uint   `json:"category_id"`
 }
 type chunkUpload struct {
-	uploadInput
+	UploadInput
 	UserID    uint  `json:"user_id"`
 	ChunkSize int64 `json:"chunk_size"`
 }
 
 func (a *Controller) AttachmentRoutes(g *route.Registrar) {
+	handlers := ResourceHandlers{Name: "dawn.attachments.files"}
 	query := func(c *gin.Context) *gorm.DB {
-		return a.DB.Model(&models.Attachment{}).Where("scope = ?", "admin")
+		return a.DB.Model(&models.Attachment{})
 	}
 	g.Patch("/attachments", middleware.Require(a.App, "dawn.attachments.update"), func(c *gin.Context) {
 		ids := response.IDs(c)
@@ -69,7 +73,7 @@ func (a *Controller) AttachmentRoutes(g *route.Registrar) {
 			}
 		}
 		if err := a.DB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-			db := tx.Model(&models.Attachment{}).Where("scope = ? AND id IN ?", "admin", ids)
+			db := tx.Model(&models.Attachment{}).Where("id IN ?", ids)
 			var total int64
 			if err := db.Session(&gorm.Session{}).Count(&total).Error; err != nil {
 				return err
@@ -84,7 +88,7 @@ func (a *Controller) AttachmentRoutes(g *route.Registrar) {
 		}
 		c.Status(204)
 	})
-	g.Get("/attachments", middleware.Require(a.App, "dawn.attachments.list"), func(c *gin.Context) {
+	handlers.Index = func(c *gin.Context) {
 		db := query(c)
 		if v := c.Query("name"); v != "" {
 			db = db.Where("name LIKE ?", "%"+v+"%")
@@ -94,6 +98,10 @@ func (a *Controller) AttachmentRoutes(g *route.Registrar) {
 		}
 		if v := c.Query("category_id"); v != "" {
 			db = db.Where("category_id = ?", v)
+		}
+		// 「我的图片」：从会话取当前用户，不接受前端传 created_by，避免越权查别人的附件。
+		if c.Query("mine") == "1" {
+			db = db.Where("created_by = ?", middleware.Actor(c).User.ID)
 		}
 		var total int64
 		if err := db.Session(&gorm.Session{}).Count(&total).Error; err != nil {
@@ -111,52 +119,53 @@ func (a *Controller) AttachmentRoutes(g *route.Registrar) {
 			data = append(data, gin.H{"id": row.ID, "name": row.Name, "category_id": row.CategoryID, "created_by": row.CreatedBy, "created_at": row.CreatedAt, "size": row.File.Size, "mime": row.File.MIME, "md5": row.File.MD5, "url": a.attachmentURL(row)})
 		}
 		response.Paginated(c, data, total, page, size)
-	})
-	g.Post("/attachment-checks", middleware.Require(a.App, "dawn.attachments.create"), func(c *gin.Context) {
-		var input uploadInput
+	}
+	// 只算 SHA-256 的秒传：admin_files.sha256 唯一，前端不必引入 MD5 实现。
+	g.Post("/attachment-checks-sha", middleware.Require(a.App, "dawn.attachments.create"), func(c *gin.Context) {
+		var input struct {
+			Name   string `json:"name" binding:"required,max=255"`
+			SHA256 string `json:"sha256" binding:"required,len=64,hexadecimal"`
+			Size   int64  `json:"size" binding:"required,gt=0"`
+		}
 		if c.ShouldBindJSON(&input) != nil {
 			response.Fail(c, 422, "文件摘要或大小格式错误")
 			return
 		}
 		var file models.File
-		if err := a.DB.Where("md5 = ? AND sha256 = ? AND size = ?", input.MD5, input.SHA256, input.Size).First(&file).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				response.Respond(c, gin.H{"exists": false})
-				return
-			}
-			response.Report(c, err)
+		if err := a.DB.WithContext(c.Request.Context()).Where("sha256 = ? AND size = ?", input.SHA256, input.Size).First(&file).Error; err != nil {
+			response.Respond(c, gin.H{"exists": false})
 			return
 		}
-
-		if err := a.validateUpload(c, input, file.MIME); err != nil {
+		meta := UploadInput{Name: input.Name, Size: input.Size, SHA256: input.SHA256, MD5: file.MD5}
+		if a.validateUpload(c, meta, file.MIME) != nil {
+			response.Respond(c, gin.H{"exists": false})
+			return
+		}
+		attachment, err := a.attachFile(c, meta, file.ID)
+		if err != nil {
 			response.Report(c, err, 422)
 			return
 		}
-		disk, _, err := a.FileDisk(c.Request.Context(), &file.Location)
-		if err != nil {
-			response.Report(c, err)
+		response.Respond(c, gin.H{"exists": true, "id": attachment.ID, "url": a.attachmentURL(attachment)})
+	})
+	g.Post("/attachment-checks", middleware.Require(a.App, "dawn.attachments.create"), func(c *gin.Context) {
+		var input UploadInput
+		if c.ShouldBindJSON(&input) != nil {
+			response.Fail(c, 422, "文件摘要或大小格式错误")
 			return
 		}
-		if closer, ok := disk.(io.Closer); ok {
-			defer closer.Close()
-		}
-		exists, err := disk.Exists(c.Request.Context(), file.Path)
+		attachment, exists, err := a.CheckUpload(c, input)
 		if err != nil {
-			response.Report(c, err)
+			response.Report(c, err, 422)
 			return
 		}
 		if !exists {
 			response.Respond(c, gin.H{"exists": false})
 			return
 		}
-		attachment, err := a.attachFile(c, input, file.ID)
-		if err != nil {
-			response.Report(c, err)
-			return
-		}
 		response.Respond(c, gin.H{"exists": true, "id": attachment.ID, "url": a.attachmentURL(attachment)})
 	})
-	g.Post("/attachments", middleware.Require(a.App, "dawn.attachments.create"), func(c *gin.Context) {
+	handlers.Store = func(c *gin.Context) {
 		limit, err := a.Setting(c.Request.Context(), "upload.max_size")
 		if err != nil {
 			response.Report(c, err)
@@ -187,14 +196,14 @@ func (a *Controller) AttachmentRoutes(g *route.Registrar) {
 		}
 		defer file.Close()
 		category, _ := strconv.ParseUint(c.PostForm("category_id"), 10, 64)
-		input := uploadInput{Name: header.Filename, MD5: c.PostForm("md5"), SHA256: c.PostForm("sha256"), Size: header.Size, CategoryID: uint(category)}
-		attachment, err := a.saveUpload(c, file, input, size)
+		input := UploadInput{Name: header.Filename, MD5: c.PostForm("md5"), SHA256: c.PostForm("sha256"), Size: header.Size, CategoryID: uint(category)}
+		attachment, err := a.SaveUpload(c, file, input, size)
 		if err != nil {
 			response.Report(c, err, 422)
 			return
 		}
 		response.Respond(c, gin.H{"id": attachment.ID, "url": a.attachmentURL(attachment)})
-	})
+	}
 	g.Get("/attachments/{id}/content", middleware.Require(a.App, ""), func(c *gin.Context) {
 		id := response.ID(c)
 		if c.IsAborted() {
@@ -205,9 +214,9 @@ func (a *Controller) AttachmentRoutes(g *route.Registrar) {
 			response.Report(c, err)
 			return
 		}
-		a.serveAttachment(c, row)
+		a.ServeAttachment(c, row)
 	})
-	update := func(c *gin.Context) {
+	handlers.Update = func(c *gin.Context) {
 		id := response.ID(c)
 		if c.IsAborted() {
 			return
@@ -231,15 +240,14 @@ func (a *Controller) AttachmentRoutes(g *route.Registrar) {
 		}
 		response.Respond(c, row)
 	}
-	g.Patch("/attachments/{id}", middleware.Require(a.App, "dawn.attachments.update"), update)
-	g.Put("/attachments/{id}", middleware.Require(a.App, "dawn.attachments.update"), update)
-	remove := func(c *gin.Context) {
+
+	handlers.Destroy = func(c *gin.Context) {
 		ids := response.IDs(c)
 		if c.IsAborted() {
 			return
 		}
 		err := a.DB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-			db := tx.Model(&models.Attachment{}).Where("scope = ?", "admin")
+			db := tx.Model(&models.Attachment{})
 			var total int64
 			if err := db.Where("id IN ?", ids).Session(&gorm.Session{}).Count(&total).Error; err != nil {
 				return err
@@ -255,10 +263,9 @@ func (a *Controller) AttachmentRoutes(g *route.Registrar) {
 		}
 		c.Status(204)
 	}
-	g.Delete("/attachments", middleware.Require(a.App, "dawn.attachments.delete"), remove)
-	g.Delete("/attachments/{id}", middleware.Require(a.App, "dawn.attachments.delete"), remove)
+
 	g.Post("/uploads", middleware.Require(a.App, "dawn.attachments.create"), func(c *gin.Context) {
-		var input uploadInput
+		var input UploadInput
 		if c.ShouldBindJSON(&input) != nil {
 			response.Fail(c, 422, "文件信息格式错误")
 			return
@@ -278,7 +285,7 @@ func (a *Controller) AttachmentRoutes(g *route.Registrar) {
 			return
 		}
 		id := rand.Text()
-		manifest := chunkUpload{uploadInput: input, UserID: middleware.Actor(c).User.ID, ChunkSize: 2 << 20}
+		manifest := chunkUpload{UploadInput: input, UserID: middleware.Actor(c).User.ID, ChunkSize: 2 << 20}
 		data, err := json.Marshal(manifest)
 		if err != nil {
 			response.Report(c, err)
@@ -340,7 +347,7 @@ func (a *Controller) AttachmentRoutes(g *route.Registrar) {
 			readers = append(readers, stream)
 			closers = append(closers, stream)
 		}
-		attachment, err := a.saveUpload(c, io.MultiReader(readers...), manifest.uploadInput, manifest.Size)
+		attachment, err := a.SaveUpload(c, io.MultiReader(readers...), manifest.UploadInput, manifest.Size)
 		if err != nil {
 			response.Report(c, err, 422)
 			return
@@ -355,6 +362,7 @@ func (a *Controller) AttachmentRoutes(g *route.Registrar) {
 		}
 		response.Respond(c, gin.H{"id": attachment.ID, "url": a.attachmentURL(attachment)})
 	})
+	RegisterResourceRoutes(a.App, g, "/attachments", "dawn.attachments", handlers)
 }
 func (a *Controller) chunkManifest(c *gin.Context) (chunkUpload, error) {
 	var manifest chunkUpload
@@ -371,8 +379,37 @@ func (a *Controller) chunkManifest(c *gin.Context) (chunkUpload, error) {
 	return manifest, nil
 }
 
-// saveUpload 被普通上传和分片合并共用, 校验实际内容后通过配置的磁盘写入.
-func (a *Controller) saveUpload(c *gin.Context, reader io.Reader, input uploadInput, limit int64) (models.Attachment, error) {
+// CheckUpload reuses an existing file by both digests and records the caller's ownership.
+// Callers authenticate the user and set Scope/OwnerID before using this method.
+func (a *Controller) CheckUpload(c *gin.Context, input UploadInput) (models.Attachment, bool, error) {
+	var file models.File
+	err := a.DB.WithContext(c.Request.Context()).Where("md5 = ? AND sha256 = ? AND size = ?", input.MD5, input.SHA256, input.Size).First(&file).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return models.Attachment{}, false, nil
+	}
+	if err != nil {
+		return models.Attachment{}, false, err
+	}
+	if err := a.validateUpload(c, input, file.MIME); err != nil {
+		return models.Attachment{}, false, err
+	}
+	disk, _, err := a.FileDisk(c.Request.Context(), &file.Location)
+	if err != nil {
+		return models.Attachment{}, false, err
+	}
+	if closer, ok := disk.(io.Closer); ok {
+		defer closer.Close()
+	}
+	exists, err := disk.Exists(c.Request.Context(), file.Path)
+	if err != nil || !exists {
+		return models.Attachment{}, false, err
+	}
+	attachment, err := a.attachFile(c, input, file.ID)
+	return attachment, err == nil, err
+}
+
+// SaveUpload 校验实际内容后，通过统一配置的存储写入文件并登记附件归属。
+func (a *Controller) SaveUpload(c *gin.Context, reader io.Reader, input UploadInput, limit int64) (models.Attachment, error) {
 	var attachment models.Attachment
 	temp, err := os.CreateTemp(a.Options.Storage, "upload-*")
 	if err != nil {
@@ -455,7 +492,7 @@ func (a *Controller) saveUpload(c *gin.Context, reader io.Reader, input uploadIn
 }
 
 // validateUpload 同时约束实际上传和秒传复用。
-func (a *Controller) validateUpload(c *gin.Context, input uploadInput, contentType string) error {
+func (a *Controller) validateUpload(c *gin.Context, input UploadInput, contentType string) error {
 	raw, err := a.Setting(c.Request.Context(), "upload.max_size")
 	if err != nil {
 		return err
@@ -500,7 +537,7 @@ func (a *Controller) validateUpload(c *gin.Context, input uploadInput, contentTy
 	return nil
 }
 
-func (a *Controller) serveAttachment(c *gin.Context, row models.Attachment) {
+func (a *Controller) ServeAttachment(c *gin.Context, row models.Attachment) {
 	disk, _, err := a.FileDisk(c.Request.Context(), &row.File.Location)
 	if err != nil {
 		response.Report(c, err)
@@ -526,7 +563,7 @@ func (a *Controller) serveAttachment(c *gin.Context, row models.Attachment) {
 }
 
 // attachFile 保留后台库的唯一文件引用；重新上传已删除附件时恢复原记录。
-func (a *Controller) attachFile(c *gin.Context, input uploadInput, fileID uint) (models.Attachment, error) {
+func (a *Controller) attachFile(c *gin.Context, input UploadInput, fileID uint) (models.Attachment, error) {
 	var file models.File
 	if err := a.DB.First(&file, fileID).Error; err != nil {
 		return models.Attachment{}, err
@@ -548,11 +585,15 @@ func (a *Controller) attachFile(c *gin.Context, input uploadInput, fileID uint) 
 		}
 		input.CategoryID = category.ID
 	}
-	row := models.Attachment{Scope: "admin", Name: path.Base(strings.ReplaceAll(input.Name, "\\", "/")), FileID: fileID, CategoryID: input.CategoryID, CreatedBy: middleware.Actor(c).User.ID}
+	if input.Scope == "" {
+		input.Scope = "admin"
+		input.OwnerID = middleware.Actor(c).User.ID
+	}
+	row := models.Attachment{Scope: input.Scope, Name: path.Base(strings.ReplaceAll(input.Name, "\\", "/")), FileID: fileID, CategoryID: input.CategoryID, CreatedBy: input.OwnerID}
 	err := a.DB.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "scope"}, {Name: "file_id"}}, DoUpdates: clause.Assignments(map[string]any{"deleted_at": 0})}).Create(&row).Error
 	if err == nil {
 		row.ID = 0
-		err = a.DB.Where("scope = ? AND file_id = ?", "admin", fileID).First(&row).Error
+		err = a.DB.Where("scope = ? AND file_id = ?", input.Scope, fileID).First(&row).Error
 	}
 	row.File = file
 	return row, err

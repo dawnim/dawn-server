@@ -13,6 +13,8 @@ import (
 
 	"github.com/dawnim/dawn-server/app/admin"
 	"github.com/dawnim/dawn-server/app/cmd"
+	"github.com/dawnim/dawn-server/database/migrations"
+	"github.com/dawnim/dawn-server/database/schema"
 	"github.com/prismgo/framework/config"
 	"github.com/prismgo/framework/console"
 	"github.com/prismgo/framework/container"
@@ -27,10 +29,51 @@ import (
 )
 
 // AdminServiceProvider 将后台能力绑定到当前应用。
-type AdminServiceProvider struct{ Configure func(*admin.Options) }
+type AdminServiceProvider struct {
+	Configure func(*admin.Options)
+	Schema    func(*schema.Definition)
+}
 
 // Register declares lazy services; database/network work happens on resolution.
 func (p AdminServiceProvider) Register(application pc.Application) error {
+	if err := application.Container().Singleton("dawn.schema", func(cc.Resolver) (any, error) {
+		definition := migrations.Definition()
+		if p.Schema != nil {
+			p.Schema(definition)
+		}
+		return definition, nil
+	}); err != nil {
+		return err
+	}
+	if err := application.Container().Singleton("dawn.geoip", func(r cc.Resolver) (any, error) {
+		raw, err := r.Make("config.default")
+		if err != nil {
+			return nil, err
+		}
+		cfg := raw.(*config.Config)
+		sources := cfg.GetStringMapString("dawn.geoip.sources")
+		return geoip.New(geoip.Config{Enabled: cfg.GetBool("dawn.geoip.enabled", true), Directory: cfg.GetString("dawn.geoip.directory", support.StoragePath("app", "geoip")), Sources: sources}), nil
+	}, container.WithCloser(func(m *geoip.Manager) error { return m.Close() })); err != nil {
+		return err
+	}
+	if err := application.Container().Singleton("dawn.customer", func(r cc.Resolver) (any, error) {
+		a, err := admin.From(r)
+		if err != nil {
+			return nil, err
+		}
+		return a.Customer, nil
+	}); err != nil {
+		return err
+	}
+	if err := application.Container().Singleton("dawn.settings", func(r cc.Resolver) (any, error) {
+		a, err := admin.From(r)
+		if err != nil {
+			return nil, err
+		}
+		return a.Settings, nil
+	}); err != nil {
+		return err
+	}
 	return application.Container().Singleton("dawn.admin", func(r cc.Resolver) (any, error) {
 		cfgRaw, err := r.Make("config.default")
 		if err != nil {
@@ -103,8 +146,13 @@ func (AdminServiceProvider) Boot(app pc.Application) error {
 	}
 	return provider.Commands(
 		console.CommandFactory(func() console.Command { return &cmd.StartCommand{} }),
+		console.CommandFactory(func() console.Command { return &cmd.EmbeddingCommand{} }),
 		console.CommandFactory(func() console.Command { return &cmd.ServiceCommand{} }),
 		console.CommandFactory(func() console.Command { return &cmd.InstallCommand{} }),
+		console.CommandFactory(func() console.Command { return &cmd.SchemaCommand{} }),
+		console.CommandFactory(func() console.Command { return &cmd.GenerateCommand{} }),
+		console.CommandFactory(func() console.Command { return &cmd.RenameCommand{} }),
 		console.CommandFactory(func() console.Command { return &cmd.GeoIPCommand{} }),
+		console.CommandFactory(func() console.Command { return &cmd.ModelCheckCommand{} }),
 	)
 }

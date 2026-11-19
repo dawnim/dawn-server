@@ -4,9 +4,13 @@ import (
 	"cmp"
 	"context"
 	"path/filepath"
+	"testing"
+	"time"
 
 	dawn "github.com/dawnim/dawn-server"
 	"github.com/dawnim/dawn-server/app/admin"
+	"github.com/dawnim/dawn-server/database/schema"
+	"github.com/dawnim/dawn-server/support/authsession"
 	fixtures "github.com/dawnim/dawn-server/tests/fixtures/database/migrations"
 	_ "github.com/dawnim/dawn-server/tests/fixtures/database/seeders"
 	"github.com/prismgo/framework/config"
@@ -18,15 +22,18 @@ import (
 
 type testOptions struct {
 	DBDriver, DBDSN, Storage, RedisURL, EncryptionKey, Environment string
+	WSURL                                                          string
 	LinkSystems                                                    []admin.LinkSystem
 	AdminUsername, AdminPassword                                   string
 	MigrationPaths                                                 []string
+	SessionEncoding                                                string
+	Schema                                                         func(*schema.Definition)
 }
 
 func newTestApp(o testOptions) (*admin.App, error) {
 	o.DBDriver = cmp.Or(o.DBDriver, "sqlite")
 	config.Add("dawn", func() map[string]any {
-		return map[string]any{"module": "example.com/test", "admin_username": cmp.Or(o.AdminUsername, "admin"), "admin_password": cmp.Or(o.AdminPassword, "123456"), "geoip": map[string]any{"enabled": false}}
+		return map[string]any{"module": "example.com/test", "admin_username": cmp.Or(o.AdminUsername, "admin"), "admin_password": cmp.Or(o.AdminPassword, "123456"), "geoip": map[string]any{"enabled": false}, "ws_url": o.WSURL}
 	})
 	config.Add("app", func() map[string]any {
 		return map[string]any{"name": "test", "env": cmp.Or(o.Environment, "testing"), "locale": "zh", "key": "base64:" + o.EncryptionKey,
@@ -35,6 +42,12 @@ func newTestApp(o testOptions) (*admin.App, error) {
 	config.Add("database", func() map[string]any {
 		return map[string]any{"default": "test", "connections": map[string]any{"test": map[string]any{"driver": o.DBDriver, "dsn": o.DBDSN, "database": o.DBDSN, "max_open_conns": 1}}, "redis": map[string]any{"default": map[string]any{"url": o.RedisURL}}}
 	})
+	config.Add("session", func() map[string]any {
+		return map[string]any{"driver": "redis", "connection": "default", "prefix": "test:testing:session", "encoding": cmp.Or(o.SessionEncoding, "json")}
+	})
+	config.Add("cache", func() map[string]any {
+		return map[string]any{"default": "redis", "prefix": "test:" + cmp.Or(o.Environment, "testing"), "stores": map[string]any{"redis": map[string]any{"driver": "redis", "connection": "default"}}}
+	})
 	config.Add("horizon", func() map[string]any { return map[string]any{"path": "/admin/horizon"} })
 	config.Add("filesystem", func() map[string]any {
 		return map[string]any{"default": "local", "disks": map[string]any{"local": map[string]any{"driver": "local", "root": o.Storage + "/uploads", "visibility": "private"}, "public": map[string]any{"driver": "local", "root": o.Storage + "/app/public", "url": "/storage", "visibility": "public"}}}
@@ -42,7 +55,7 @@ func newTestApp(o testOptions) (*admin.App, error) {
 	config.Add("logging", func() map[string]any {
 		return map[string]any{"default": "stderr", "channels": map[string]any{"stderr": map[string]any{"driver": "stderr", "level": "error"}}}
 	})
-	app := foundation.Configure(o.Storage).WithExtensionProviders(encryption.ServiceProvider{}, dawn.ServiceProvider{Configure: func(options *admin.Options) { options.Storage = o.Storage; options.LinkSystems = o.LinkSystems }}).WithRouting(func(r *foundation.Routing) {
+	app := foundation.Configure(o.Storage).WithExtensionProviders(encryption.ServiceProvider{}, dawn.ServiceProvider{Configure: func(options *admin.Options) { options.Storage = o.Storage; options.LinkSystems = o.LinkSystems }, Schema: o.Schema}).WithRouting(func(r *foundation.Routing) {
 		r.Routes(dawn.RegisterRoutes)
 		r.MigrationPaths(append([]string{fixtures.Directory}, o.MigrationPaths...)...)
 		r.SeedPaths(filepath.Join(fixtures.Directory, "..", "seeders"))
@@ -68,4 +81,14 @@ func databaseCommand(a *admin.App, command string, input ...console.CallInput) e
 		return err
 	}
 	return raw.(*kernel.Kernel).Call(context.Background(), command, input...)
+}
+
+// testSession走实际Redis登录存储，不通过数据库伪造凭证。
+func testSession(t *testing.T, a *admin.App, userID uint) (authsession.Record, string) {
+	t.Helper()
+	r, token, _, err := a.Sessions.Create(context.Background(), authsession.Record{UserID: userID}, time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r, token
 }

@@ -9,9 +9,7 @@ import (
 	"github.com/dawnim/dawn-server/support/i18n"
 
 	"github.com/dawnim/dawn-server/app/models"
-	"github.com/dawnim/dawn-server/constants"
 	"github.com/prismgo/framework/encryption"
-	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
 
@@ -95,33 +93,13 @@ func (a *App) Setting(ctx context.Context, key string) (json.RawMessage, error) 
 		return nil, i18n.Errorf("配置未注册: %s", key)
 	}
 	group, field, _ := strings.Cut(key, ".")
-	raw, err := a.Redis.HGet(ctx, a.Key(constants.ForeverSettings, group), field).Result()
-	if errors.Is(err, redis.Nil) {
-		var row models.Setting
-		err = a.DB.WithContext(ctx).Where(map[string]any{"key": group}).First(&row).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return json.Marshal(definition.Default)
-		}
-		if err != nil {
-			return nil, err
-		}
-		values := map[string]json.RawMessage{}
-		if err = json.Unmarshal([]byte(row.Value), &values); err != nil {
-			return nil, err
-		}
-		if err = a.CacheSetting(ctx, row); err != nil {
-			return nil, err
-		}
-		value, ok := values[field]
-		if !ok {
-			return json.Marshal(definition.Default)
-		}
-		raw = string(value)
+	value, err := a.Settings.Read(ctx, a.DB, group, field)
+	if errors.Is(err, gorm.ErrRecordNotFound) || err == nil && value == nil {
+		return json.Marshal(definition.Default)
 	}
 	if err != nil {
 		return nil, err
 	}
-	value := json.RawMessage(raw)
 	if definition.Secret {
 		var ciphertext string
 		if err := json.Unmarshal(value, &ciphertext); err != nil {
@@ -142,9 +120,5 @@ func (a *App) CacheSetting(ctx context.Context, row models.Setting) error {
 	if err := json.Unmarshal([]byte(row.Value), &values); err != nil {
 		return err
 	}
-	args := []any{row.Revision}
-	for field, value := range values {
-		args = append(args, field, string(value))
-	}
-	return a.Redis.Eval(ctx, `local old=tonumber(redis.call('hget',KEYS[1],'__revision') or '-1'); if old>tonumber(ARGV[1]) then return 0 end; redis.call('del',KEYS[1]); redis.call('hset',KEYS[1],'__revision',ARGV[1]); for i=2,#ARGV,2 do redis.call('hset',KEYS[1],ARGV[i],ARGV[i+1]); end; return 1`, []string{a.Key(constants.ForeverSettings, row.Key)}, args...).Err()
+	return a.Settings.Write(ctx, row.Key, values, row.Revision)
 }

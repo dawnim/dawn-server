@@ -15,10 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/dawnim/dawn-server/app/admin"
 	"github.com/dawnim/dawn-server/app/models"
 )
 
@@ -37,10 +35,7 @@ func TestAttachmentStorage(t *testing.T) {
 	if err := databaseCommand(a, "db:seed"); err != nil {
 		t.Fatal(err)
 	}
-	token := "attachment-test-token"
-	if err := a.DB.Create(&models.Session{ID: "attachment-test-session", UserID: 1, AccessHash: admin.TokenHash(token), RefreshHash: admin.TokenHash("refresh"), ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}).Error; err != nil {
-		t.Fatal(err)
-	}
+	_, token := testSession(t, a, 1)
 	if err := os.MkdirAll(filepath.Join(root, "public"), 0755); err != nil {
 		t.Fatal(err)
 	}

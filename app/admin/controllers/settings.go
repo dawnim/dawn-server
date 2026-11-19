@@ -3,6 +3,7 @@ package controllers
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"maps"
 	"reflect"
 	"slices"
@@ -76,7 +77,7 @@ func (a *Controller) SettingRoutes(g *route.Registrar) {
 			c.Status(404)
 			return
 		}
-		a.serveAttachment(c, row)
+		a.ServeAttachment(c, row)
 	})
 	g.Get("/settings", middleware.Require(a.App, "dawn.settings.list"), func(c *gin.Context) {
 		rows := []gin.H{}
@@ -185,7 +186,23 @@ func (a *Controller) SettingRoutes(g *route.Registrar) {
 		err := a.DB.WithContext(c.Request.Context()).Transaction(func(db *gorm.DB) error {
 			for group, changes := range groups {
 				var row models.Setting
-				if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Where(map[string]any{"key": group}).First(&row).Error; err != nil {
+				err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Where(map[string]any{"key": group}).First(&row).Error
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					// 扩展可自行注册新配置分组；保存时按需建行，避免「记录不存在」。
+					name := group
+					for _, d := range a.SettingDefinitions {
+						if g, _, _ := strings.Cut(d.Key, "."); g == group {
+							name = i18n.Text(c.GetString("admin.locale"), d.Group)
+							break
+						}
+					}
+					row = models.Setting{Key: group, Name: name, Value: "{}", Revision: 1}
+					if err = db.Create(&row).Error; err != nil {
+						return err
+					}
+					err = nil
+				}
+				if err != nil {
 					return err
 				}
 				values := map[string]json.RawMessage{}

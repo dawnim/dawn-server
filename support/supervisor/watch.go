@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -14,7 +15,7 @@ import (
 )
 
 // Watch 监听应用及本地模块源码，编译成功后更新运行中的 Go 服务。
-func Watch(ctx context.Context, directory, runtime string, reload func(string) error) error {
+func Watch(ctx context.Context, directory, runtime string, output io.Writer, reload func(string) error) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return err
@@ -43,7 +44,7 @@ func Watch(ctx context.Context, directory, runtime string, reload func(string) e
 	}
 	refresh := func() error {
 		modules := exec.CommandContext(ctx, "go", "list", "-m", "-f", "{{if .Main}}{{.Dir}}{{else if .Replace}}{{if not .Replace.Version}}{{.Replace.Dir}}{{end}}{{end}}", "all")
-		modules.Dir, modules.Stderr = directory, os.Stderr
+		modules.Dir, modules.Stderr = directory, output
 		roots, err := modules.Output()
 		if err != nil {
 			return err
@@ -89,7 +90,7 @@ func Watch(ctx context.Context, directory, runtime string, reload func(string) e
 			}
 		case <-timer.C:
 			command := exec.CommandContext(ctx, "go", "build", "-o", binary+".next", ".")
-			command.Dir, command.Stdout, command.Stderr = directory, os.Stdout, os.Stderr
+			command.Dir, command.Stdout, command.Stderr = directory, output, output
 			configureProcess(command)
 			command.Cancel = func() error { return terminateProcess(command.Process.Pid, true) }
 			if err := command.Run(); err != nil {

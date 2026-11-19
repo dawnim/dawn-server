@@ -15,11 +15,12 @@ import (
 	"time"
 
 	"github.com/dawnim/dawn-server/support/i18n"
+	"github.com/prismgo/framework/support"
 )
 
 // Attach transfers local terminal ownership after the requested services are ready.
 // Closing the current owner stops the manager; closing a replaced owner has no effect.
-func Attach(ctx context.Context, socket string, specs map[string]Spec, output io.Writer) (bool, error) {
+func Attach(ctx context.Context, socket string, specs map[string]Spec, output *Display) (bool, error) {
 	conn, err := (&net.Dialer{Timeout: time.Second}).DialContext(ctx, "unix", socket)
 	if err != nil {
 		return !socketAbsent(err), err
@@ -40,8 +41,7 @@ func Attach(ctx context.Context, socket string, specs map[string]Spec, output io
 		return true, errors.New(result.Error)
 	}
 	_ = conn.SetDeadline(time.Time{})
-	data, _ := json.MarshalIndent(result, "", "  ")
-	_, _ = output.Write(append(data, '\n'))
+	output.Render("本地开发", result)
 	err = decoder.Decode(&result)
 	if ctx.Err() != nil || result.Replaced {
 		return true, nil
@@ -53,15 +53,18 @@ func Attach(ctx context.Context, socket string, specs map[string]Spec, output io
 }
 
 // Terminal starts an independent local manager when absent, then owns its control connection.
-func Terminal(ctx context.Context, socket string, launcher Spec, specs map[string]Spec, output io.Writer) (result error) {
+func Terminal(ctx context.Context, socket string, launcher Spec, specs map[string]Spec, output *Display) (result error) {
 	if err := os.MkdirAll(filepath.Dir(socket), 0700); err != nil {
 		return err
 	}
-	log, err := os.OpenFile(filepath.Join(filepath.Dir(socket), "local.log"), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0600)
+	log, err := os.OpenFile(filepath.Join(filepath.Dir(socket), "local-cli.log"), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0600)
 	if err != nil {
 		return err
 	}
 	defer log.Close()
+	output.Log, _ = filepath.Rel(support.BasePath(), log.Name())
+	output.Buffer()
+	defer output.Flush()
 	if _, err := log.Seek(0, io.SeekEnd); err != nil {
 		return err
 	}
@@ -80,12 +83,37 @@ func Terminal(ctx context.Context, socket string, launcher Spec, specs map[strin
 			}
 		}
 	}()
-	defer func() { cancel(); <-stopped }()
-	if connected, err := Attach(ctx, socket, specs, output); connected {
-		return err
+	defer func() { cancel(); <-stopped; _, _ = io.Copy(output, log) }()
+	timeout := time.NewTimer(30 * time.Second)
+	defer timeout.Stop()
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	var lock *os.File
+	for {
+		if connected, err := Attach(ctx, socket, specs, output); connected {
+			return err
+		}
+		lock, err = lockManager(socket + ".lock")
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, errManagerRunning) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timeout.C:
+			return i18n.Errorf("本地终端连接超时")
+		case <-tick.C:
+		}
 	}
+	defer lock.Close()
 	cmd := exec.Command(launcher.Command[0], launcher.Command[1:]...)
 	cmd.Dir, cmd.Env = launcher.Dir, append(os.Environ(), launcher.Env...)
+	// Transfer the held lock so concurrent terminals cannot launch another manager.
+	cmd.ExtraFiles = []*os.File{lock}
+	cmd.Env = append(cmd.Env, "DAWN_MANAGER_LOCK_FD=3")
 	// A separate file description keeps the manager's writes independent of the terminal's reader.
 	writer, err := os.OpenFile(log.Name(), os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
@@ -97,6 +125,7 @@ func Terminal(ctx context.Context, socket string, launcher Spec, specs map[strin
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	_ = lock.Close()
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	defer func() {
@@ -104,10 +133,6 @@ func Terminal(ctx context.Context, socket string, launcher Spec, specs map[strin
 			_ = cmd.Process.Signal(os.Interrupt)
 		}
 	}()
-	timeout := time.NewTimer(30 * time.Second)
-	defer timeout.Stop()
-	tick := time.NewTicker(100 * time.Millisecond)
-	defer tick.Stop()
 	for {
 		if connected, err := Attach(ctx, socket, specs, output); connected {
 			return err

@@ -1,10 +1,12 @@
 package cmd
 
 import (
-	"os"
+	"slices"
+	"time"
 
 	"github.com/dawnim/dawn-server/support/geoip"
 	"github.com/dawnim/dawn-server/support/i18n"
+	"github.com/dawnim/dawn-server/support/supervisor"
 	"github.com/prismgo/framework/config"
 	"github.com/prismgo/framework/console"
 )
@@ -17,6 +19,10 @@ func (*InstallCommand) Definition() *console.Definition {
 
 func (*InstallCommand) Handle(ctx console.CommandContext) (result error) {
 	defer func() { result = i18n.Localize(result, i18n.Locale(ctx.Context())) }()
+	display := supervisor.NewDisplay(ctx.IO(), i18n.Locale(ctx.Context()), false)
+	display.Heading("安装Dawn系统表并创建初始管理员")
+	start := time.Now()
+	defer func() { display.Result(start, result) }()
 	input := console.CallInput{Options: map[string]any{"force": ctx.Input().OptionBool("force")}}
 	for _, command := range []string{"migrate", "db:seed"} {
 		if err := ctx.Call(command, input); err != nil {
@@ -24,13 +30,11 @@ func (*InstallCommand) Handle(ctx console.CommandContext) (result error) {
 		}
 	}
 	if config.GetBool("dawn.geoip.enabled", true) {
-		if _, err := os.Stat(geoip.Path()); os.IsNotExist(err) {
+		if rows := geoip.Resolve().Status(); len(rows) == 0 || slices.ContainsFunc(rows, func(row geoip.Status) bool { return !row.Ready }) {
 			ctx.IO().Info(i18n.Text("", "正在下载并校验IP地理数据库，请稍候…"))
 			if err := geoip.Update(ctx.Context()); err != nil {
 				return err
 			}
-		} else if err != nil {
-			return err
 		}
 	}
 	return nil

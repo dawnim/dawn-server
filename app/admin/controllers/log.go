@@ -87,6 +87,5 @@ func (a *Controller) LogRoutes(g *route.Registrar) {
 		}
 		c.Status(204)
 	}
-	g.Delete("/logs", middleware.Require(a.App, "dawn.logs.delete"), remove)
-	g.Delete("/logs/{id}", middleware.Require(a.App, "dawn.logs.delete"), remove)
+	RegisterResourceRoutes(a.App, g, "/logs", "dawn.logs", ResourceHandlers{Destroy: remove})
 }

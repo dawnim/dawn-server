@@ -2,7 +2,6 @@ package tests
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
@@ -35,17 +34,14 @@ func TestAuthorizationCacheInvalidationDuringLoad(t *testing.T) {
 	if err := a.DB.Create(&role).Error; err != nil {
 		t.Fatal(err)
 	}
-	user := models.User{Username: "cache-race", Status: 1, Roles: []models.Role{role}}
+	user := models.AdminUser{Username: "cache-race", Status: 1, Roles: []models.Role{role}}
 	if err := a.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := a.DB.Create(&models.RolePermission{RoleID: role.ID, Key: "dawn.users.list"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	token := rand.Text()
-	if err := a.DB.Create(&models.Session{ID: rand.Text(), UserID: user.ID, AccessHash: admin.TokenHash(token), RefreshHash: rand.Text(), ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}).Error; err != nil {
-		t.Fatal(err)
-	}
+	_, token := testSession(t, a, user.ID)
 	staleActor, err := a.Authenticate(token)
 	if err != nil {
 		t.Fatal(err)

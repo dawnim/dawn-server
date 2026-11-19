@@ -3,7 +3,6 @@ package tests
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"net/http/httptest"
 	"strings"
@@ -12,10 +11,10 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/dawnim/dawn-server/app/admin"
 	"github.com/dawnim/dawn-server/app/models"
 	"github.com/dawnim/dawn-server/realtime"
 	"github.com/dawnim/dawn-server/support/i18n"
+	"github.com/dawnim/dawn-server/support/identity"
 	"github.com/gorilla/websocket"
 	"github.com/prismgo/framework/foundation"
 	consolekernel "github.com/prismgo/framework/kernel"
@@ -28,17 +27,22 @@ func TestLanguages(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Close()
+	codec := identity.Codec{Key: strings.Repeat("ab", 32)}
+	_, identityErr := codec.Big2ID("invalid")
+	if got := i18n.Message(identityErr, "en"); got != "Invalid user ID" {
+		t.Fatalf("identity English: %q", got)
+	}
+	if got := i18n.Message(identityErr, "zh"); got != "无效的用户编号" {
+		t.Fatalf("identity Chinese: %q", got)
+	}
 	if err := databaseCommand(a, "migrate"); err != nil {
 		t.Fatal(err)
 	}
-	user := models.User{Username: "language", Super: true, Status: models.Enabled}
+	user := models.AdminUser{Username: "language", Super: true, Status: models.Enabled}
 	if err := a.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
-	token := rand.Text()
-	if err := a.DB.Create(&models.Session{ID: rand.Text(), UserID: user.ID, AccessHash: admin.TokenHash(token), RefreshHash: rand.Text(), ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}).Error; err != nil {
-		t.Fatal(err)
-	}
+	_, token := testSession(t, a, user.ID)
 	handler, err := a.Handler()
 	if err != nil {
 		t.Fatal(err)

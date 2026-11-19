@@ -3,7 +3,6 @@ package tests
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"go/parser"
@@ -17,11 +16,11 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/dawnim/dawn-server/app/admin"
 	"github.com/dawnim/dawn-server/app/admin/middleware"
 	"github.com/dawnim/dawn-server/app/models"
 	"github.com/dawnim/dawn-server/constants"
 	"github.com/dawnim/dawn-server/support/i18n"
+	"github.com/dawnim/dawn-server/support/identity"
 	"github.com/gin-gonic/gin"
 	"github.com/prismgo/horizon"
 )
@@ -49,7 +48,7 @@ func TestAdminFeatures(t *testing.T) {
 	for _, item := range []struct {
 		model any
 		count int64
-	}{{&models.Department{}, 1}, {&models.Post{}, 1}, {&models.UserPost{}, 1}, {&models.Category{}, 6}, {&models.Setting{}, 3}} {
+	}{{&models.Department{}, 1}, {&models.Post{}, 1}, {&models.UserPost{}, 1}, {&models.Category{}, 6}, {&models.Setting{}, 4}} {
 		var count int64
 		a.DB.Model(item.model).Count(&count)
 		if count != item.count {
@@ -67,11 +66,7 @@ func TestAdminFeatures(t *testing.T) {
 	if redis.HGet(a.Key(constants.ForeverSettings, "upload"), "driver") == "" {
 		t.Fatal("未初始化配置缓存")
 	}
-	tokenValue := rand.Text()
-	session := models.Session{ID: rand.Text(), UserID: 1, AccessHash: admin.TokenHash(tokenValue), RefreshHash: admin.TokenHash(rand.Text()), ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), RefreshExpiresAt: time.Now().Add(time.Hour).UnixMilli()}
-	if err := a.DB.Create(&session).Error; err != nil {
-		t.Fatal(err)
-	}
+	_, tokenValue := testSession(t, a, 1)
 	handler, err := a.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -125,11 +120,23 @@ func TestAdminFeatures(t *testing.T) {
 	if status, result := call("GET", "/cache/value?definition=ForeverSettings&key="+url.QueryEscape(settingKey), nil); status != 200 || !strings.Contains(fmt.Sprint(result), "test-secret") {
 		t.Fatal("缓存查看不应脱敏", result)
 	}
+	if _, err := identity.Load(ctx, a.DB); err != nil {
+		t.Fatal(err)
+	}
+	identityKey := a.Key(constants.ForeverSettings, identity.SettingKey)
+	for _, method := range []string{"GET", "PATCH", "DELETE"} {
+		if status, _ := call(method, "/cache/value?definition=ForeverSettings&key="+url.QueryEscape(identityKey), nil); status != 422 {
+			t.Fatal("内部配置不应通过缓存管理访问", method, status)
+		}
+	}
+	if status, result := call("GET", "/cache/instances?definition=ForeverSettings", nil); status != 200 || strings.Contains(fmt.Sprint(result), identityKey) {
+		t.Fatal("缓存列表暴露内部配置", status, result)
+	}
 	a.Redis.Set(ctx, a.Key(constants.TempCaptcha, "protected"), "keep", time.Minute)
 	if status, result := call("DELETE", "/cache", nil); status != 200 {
 		t.Fatal(result)
 	}
-	if !redis.Exists(a.Key(constants.TempCaptcha, "protected")) || redis.Exists(a.Options.Name+":"+a.Options.Environment+":temp:public:string") {
+	if !redis.Exists(a.Key(constants.TempCaptcha, "protected")) || !redis.Exists(identityKey) || redis.Exists(a.Options.Name+":"+a.Options.Environment+":temp:public:string") {
 		t.Fatal("批量清理未遵循Clearable范围")
 	}
 	key := a.Key(constants.TempCaptcha, "protected")

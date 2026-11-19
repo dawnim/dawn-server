@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"os"
@@ -17,30 +16,32 @@ import (
 	"time"
 
 	"github.com/dawnim/dawn-server/support/i18n"
-	"github.com/prismgo/framework/logger"
 )
 
 // Spec 声明服务的执行入口；Address 用于继承监听器，Probe 用于前端就绪检查。
 type Spec struct {
 	Command             []string
 	Dir, Address, Probe string
+	URL                 string
 	Env                 []string
 	Timeout             time.Duration
 	JoinGroup           bool
 }
 
 type Status struct {
-	Name      string `json:"name"`
-	State     string `json:"state"`
-	Wanted    bool   `json:"wanted"`
-	PID       int    `json:"pid"`
-	Restarts  int    `json:"restarts"`
-	StartedAt int64  `json:"started_at"`
-	LastError string `json:"last_error,omitempty"`
+	Name      string        `json:"name"`
+	State     string        `json:"state"`
+	Wanted    bool          `json:"wanted"`
+	PID       int           `json:"pid"`
+	Restarts  int           `json:"restarts"`
+	StartedAt int64         `json:"started_at"`
+	LastError string        `json:"last_error,omitempty"`
+	Address   string        `json:"address,omitempty"`
+	Process   *ProcessStats `json:"process,omitempty"`
 }
 
 // Run 持有排他锁和本地控制入口，直到收到停止命令或应用退出信号。
-func Run(ctx context.Context, socket string, specs map[string]Spec, names []string, watch bool) error {
+func Run(ctx context.Context, socket string, specs map[string]Spec, names []string, watch bool, display *Display) error {
 	if err := os.MkdirAll(filepath.Dir(socket), 0700); err != nil {
 		return err
 	}
@@ -64,8 +65,11 @@ func Run(ctx context.Context, socket string, specs map[string]Spec, names []stri
 	defer cancel()
 	services := map[string]*service{}
 	var workers sync.WaitGroup
+	metrics := &monitor{}
 	for name, spec := range specs {
 		s := &service{name: name, spec: spec, directory: filepath.Dir(socket), commands: make(chan operation), status: Status{Name: name, State: "stopped"}}
+		s.socket = socket
+		s.output = &logWriter{out: display, name: name}
 		services[name] = s
 		workers.Go(func() { s.run(ctx) })
 	}
@@ -78,6 +82,7 @@ func Run(ctx context.Context, socket string, specs map[string]Spec, names []stri
 			action = "start"
 		}
 		names, err := Parse(req.Selection, action)
+
 		if err != nil {
 			result.Error = i18n.Message(err, "")
 			return result
@@ -133,6 +138,7 @@ func Run(ctx context.Context, socket string, specs map[string]Spec, names []stri
 		for _, name := range names {
 			result.Services = append(result.Services, services[name].snapshot())
 		}
+		metrics.enrich(ctx, &result)
 		return result
 	}
 	var terminalMu sync.Mutex
@@ -157,6 +163,10 @@ func Run(ctx context.Context, socket string, specs map[string]Spec, names []stri
 				_ = conn.SetDeadline(time.Now().Add(3 * time.Minute))
 				var req request
 				if err := json.NewDecoder(io.LimitReader(conn, 16<<10)).Decode(&req); err != nil {
+					return
+				}
+				if req.Action == "metrics" && req.Runtime != nil {
+					metrics.record(*req.Runtime)
 					return
 				}
 				if req.Action == "attach" {
@@ -200,11 +210,29 @@ func Run(ctx context.Context, socket string, specs map[string]Spec, names []stri
 			})
 		}
 	}()
-	initial := apply(request{Selection: strings.Join(names, ","), Action: "start"})
-	logger.Info("Dawn supervisor", map[string]any{"pid": os.Getpid(), "services": initial.Services, "error": initial.Error})
-	if initial.Error != "" {
-		fmt.Fprintln(os.Stderr, initial.Error)
+	if os.Getenv("DAWN_DETACHED_MANAGER") != "1" {
+		display.Buffer()
 	}
+	initial := apply(request{Selection: strings.Join(names, ","), Action: "start"})
+	if os.Getenv("DAWN_DETACHED_MANAGER") != "1" {
+		display.Render("服务启动", initial)
+	}
+	workers.Go(func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				result := Response{PID: os.Getpid()}
+				for _, s := range services {
+					result.Services = append(result.Services, s.snapshot())
+				}
+				metrics.enrich(ctx, &result)
+			}
+		}
+	})
 	if slices.Contains(names, "frontend") {
 		select {
 		case <-attached:
@@ -219,7 +247,9 @@ func Run(ctx context.Context, socket string, specs map[string]Spec, names []stri
 	watchErr := make(chan error, 1)
 	if watch {
 		workers.Go(func() {
-			watchErr <- Watch(ctx, specs["http"].Dir, filepath.Dir(socket), func(executable string) error {
+			output := &logWriter{out: display, name: "build"}
+			defer output.Flush()
+			watchErr <- Watch(ctx, specs["http"].Dir, filepath.Dir(socket), output, func(executable string) error {
 				result := apply(request{Selection: "http,ws,horizon,cron", Action: "update", Executable: executable})
 				if result.Error != "" {
 					return errors.New(result.Error)

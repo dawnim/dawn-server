@@ -143,6 +143,8 @@
             minWidth: 130,
             sortable: true,
             showOverflowTooltip: true,
+            dawnType: column.dict ? 'dict' : undefined,
+            dawnDict: column.dict,
             formatter:
               column.type === 'date'
                 ? (row: Record<string, any>) => dateLabel(row[column.prop])

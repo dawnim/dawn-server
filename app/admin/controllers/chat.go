@@ -24,7 +24,7 @@ func (a *Controller) chatMember(c *gin.Context) bool {
 		return false
 	}
 	var member models.ChatMember
-	if err := a.DB.WithContext(c.Request.Context()).Where("conversation_id = ? AND realm = ? AND subject = ?", id, "admin", strconv.FormatUint(uint64(middleware.Actor(c).User.ID), 10)).First(&member).Error; err != nil {
+	if err := a.DB.WithContext(c.Request.Context()).Joins("JOIN chat_conversations AS conv ON conv.id = chat_members.conversation_id AND conv.type = 'direct'").Where("conversation_id = ? AND realm = ? AND subject = ?", id, "admin", strconv.FormatUint(uint64(middleware.Actor(c).User.ID), 10)).First(&member).Error; err != nil {
 		response.Report(c, err)
 		return false
 	}
@@ -37,7 +37,7 @@ func (a *Controller) ChatRoutes(g *route.Registrar) {
 		identityColumn = "CAST(u.id AS CHAR)"
 	}
 	g.Get("/chat-contacts", middleware.Require(a.App, ""), func(c *gin.Context) {
-		db := a.DB.WithContext(c.Request.Context()).Model(&models.User{}).Where("id <> ? AND status = ?", middleware.Actor(c).User.ID, models.Enabled)
+		db := a.DB.WithContext(c.Request.Context()).Model(&models.AdminUser{}).Where("id <> ? AND status = ?", middleware.Actor(c).User.ID, models.Enabled)
 		if search := c.Query("search"); search != "" {
 			db = db.Where("username LIKE ? OR realname LIKE ?", "%"+search+"%", "%"+search+"%")
 		}
@@ -72,7 +72,7 @@ func (a *Controller) ChatRoutes(g *route.Registrar) {
 			response.Fail(c, 422, "不能与自己聊天")
 			return
 		}
-		var peer models.User
+		var peer models.AdminUser
 		if err := a.DB.WithContext(c.Request.Context()).Where("status = ?", models.Enabled).First(&peer, input.UserID).Error; err != nil {
 			response.Report(c, err)
 			return
@@ -137,7 +137,7 @@ func (a *Controller) ChatRoutes(g *route.Registrar) {
 			return
 		}
 		var unread int64
-		if err := a.DB.WithContext(c.Request.Context()).Model(&models.ChatMessage{}).Joins("JOIN chat_members AS mine ON mine.conversation_id = chat_messages.conversation_id AND mine.realm = ? AND mine.subject = ?", "admin", subject).Where("chat_messages.id > mine.last_read_message_id AND chat_messages.status = ? AND NOT (sender_realm = ? AND sender_subject = ?)", "completed", "admin", subject).Count(&unread).Error; err != nil {
+		if err := a.DB.WithContext(c.Request.Context()).Model(&models.ChatMessage{}).Joins("JOIN chat_conversations AS conv ON conv.id = chat_messages.conversation_id AND conv.type = 'direct'").Joins("JOIN chat_members AS mine ON mine.conversation_id = chat_messages.conversation_id AND mine.realm = ? AND mine.subject = ?", "admin", subject).Where("chat_messages.id > mine.last_read_message_id AND chat_messages.status = ? AND NOT (sender_realm = ? AND sender_subject = ?)", "completed", "admin", subject).Count(&unread).Error; err != nil {
 			response.Report(c, err)
 			return
 		}
@@ -202,7 +202,7 @@ func (a *Controller) ChatRoutes(g *route.Registrar) {
 		conflict, disabled, limited := false, false, false
 		err := a.DB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 			// Serialize each sender across conversations before checking the per-minute limit.
-			var sender models.User
+			var sender models.AdminUser
 			if err := tx.Select("id").Clauses(clause.Locking{Strength: "UPDATE"}).First(&sender, actor.User.ID).Error; err != nil {
 				return err
 			}

@@ -173,8 +173,8 @@ func TestBusinessExtension(t *testing.T) {
 	if hub.Handle("app.echo", nil) == nil || hub.Handle("auth", nil) == nil || hub.Handle("ready", nil) == nil {
 		t.Fatal("duplicate or reserved handler accepted")
 	}
-	hub.AuthorizeEvent = func(ctx context.Context, p Principal, event string) error {
-		if event == "order.private" {
+	hub.AuthorizeEvent = func(ctx context.Context, p Principal, event Message) error {
+		if event.Type == "order.private" {
 			return fmt.Errorf("forbidden")
 		}
 		return nil

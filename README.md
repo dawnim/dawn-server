@@ -53,8 +53,10 @@
 
 - [快速开始](https://github.com/dawnim/dawn-simple/blob/main/docs/quickstart.md)：安装、初始化与首次运行。
 - [架构与目录](https://github.com/dawnim/dawn-simple/blob/main/docs/architecture.md)：项目结构、应用生命周期与扩展入口。
+- [网站动态开发实例](https://github.com/dawnim/dawn-simple/blob/main/docs/moments.md)：社区、图片、AI创作与实时聊天的完整业务示例。
 - [后端开发](https://github.com/dawnim/dawn-simple/blob/main/docs/backend.md) / [前端开发](https://github.com/dawnim/dawn-simple/blob/main/docs/frontend.md)：从接口、菜单到业务页面。
 - [权限与数据范围](https://github.com/dawnim/dawn-simple/blob/main/docs/authorization.md)：角色授权、管理级别与数据归属。
+- [AI客服与业务扩展](https://github.com/dawnim/dawn-simple/blob/main/docs/ai.md) / [普通用户](https://github.com/dawnim/dawn-simple/blob/main/docs/users.md) / [GeoIP](https://github.com/dawnim/dawn-simple/blob/main/docs/geoip.md)。
 - [聊天与实时通信](https://github.com/dawnim/dawn-simple/blob/main/docs/chat.md)：消息收发、可靠投递与 WebSocket 扩展。
 - [配置](https://github.com/dawnim/dawn-simple/blob/main/docs/configuration.md) / [服务运行](https://github.com/dawnim/dawn-simple/blob/main/docs/runtime.md) / [测试与发布](https://github.com/dawnim/dawn-simple/blob/main/docs/testing.md)。
 
@@ -63,7 +65,16 @@
 - [PrismGo](https://github.com/prismgo/prismgo)：Laravel 风格的 Go 应用框架与基础组件。
 - [SaiAdmin 6.x](https://github.com/saithink/saiadmin6.x)、[Art Design Pro](https://github.com/Daymychen/art-design-pro)：管理界面、布局与组件基础。
 - [Gin](https://github.com/gin-gonic/gin)、[GORM](https://gorm.io/)、[Vue](https://vuejs.org/)、[Element Plus](https://element-plus.org/) 及相关开源项目。
+- [OpenAI Go SDK](https://github.com/openai/openai-go)、[Anthropic Go SDK](https://github.com/anthropics/anthropic-sdk-go)、[Telegram Bot SDK](https://github.com/go-telegram/bot)、[MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk)、[Agent Skills](https://agentskills.io/)：模型、机器人与扩展契约。
+- [sub2api](https://github.com/Wei-Shaw/sub2api)：模型协议与推理参数设计参考。
+- [Rhex](https://github.com/lovedevpanda/Rhex)：社区界面设计参考。
+- [SparkMD5](https://github.com/satazor/js-spark-md5)：浏览器文件摘要计算，随官网保留其MIT许可。
+- [Qwen3 Embedding](https://github.com/QwenLM/Qwen3-Embedding)、[Sentence Transformers](https://github.com/huggingface/sentence-transformers)：本地向量模型与推理。
+- [Capital One FPE](https://github.com/capitalone/fpe)：AES-FF1用户公开编号置换
+- [ip2region](https://github.com/lionsoul2014/ip2region)：IPv4、IPv6离线地域与运营商数据及Go查询客户端。
 - IP 地理数据来自 [MaxMind GeoLite2](https://www.maxmind.com/en/geolite2/eula)，默认通过 [P3TERX/GeoLite.mmdb](https://github.com/P3TERX/GeoLite.mmdb) 下载，数据使用遵循其许可。
+
+- [markdown-it](https://github.com/markdown-it/markdown-it)：访客聊天、客服与管理员私聊的Markdown解析
 
 ## 许可
 

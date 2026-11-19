@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"math"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/dawnim/dawn-server/support/authsession"
 	"github.com/dawnim/dawn-server/support/i18n"
 
 	"github.com/dawnim/dawn-server/app/models"
@@ -17,7 +19,7 @@ import (
 )
 
 type Actor struct {
-	User         models.User
+	User         models.AdminUser
 	Permissions  map[string]bool
 	SessionID    string
 	cacheVersion string
@@ -81,7 +83,12 @@ func (a *Actor) Scope(ownerColumn, departmentColumn string) func(*gorm.DB) *gorm
 		if all {
 			return db
 		}
-		condition := db.Session(&gorm.Session{NewDB: true}).Where(ownerColumn+" = ?", a.User.ID)
+		condition := db.Session(&gorm.Session{NewDB: true})
+		if ownerColumn != "" {
+			condition = condition.Where(ownerColumn+" = ?", a.User.ID)
+		} else {
+			condition = condition.Where("1 = 0")
+		}
 		if departmentColumn != "" && len(departments) > 0 {
 			condition = condition.Or(departmentColumn+" IN ?", departments)
 		}
@@ -90,7 +97,7 @@ func (a *Actor) Scope(ownerColumn, departmentColumn string) func(*gorm.DB) *gorm
 }
 
 // CanManageUser 校验管理级别；调用方还需检查操作权限和数据范围。
-func (a *Actor) CanManageUser(user *models.User) bool {
+func (a *Actor) CanManageUser(user *models.AdminUser) bool {
 	return !user.Super && user.ID != a.User.ID && (a.User.Super || (&Actor{User: *user}).Level() < a.Level())
 }
 func TokenHash(value string) string {
@@ -100,21 +107,34 @@ func TokenHash(value string) string {
 
 // Authenticate 独立验证登录会话，资料和权限使用按用户隔离的缓存。
 func (a *App) Authenticate(token string) (*Actor, error) {
-	return a.authenticateSession("access_hash", TokenHash(token))
+	record, err := a.Sessions.Authenticate(context.Background(), token, false)
+	if errors.Is(err, authsession.ErrUnauthenticated) {
+		return nil, gorm.ErrRecordNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return a.ActorForSession(record.ID)
 }
-func (a *App) authenticateSession(column, value string) (*Actor, error) {
+
+// ActorForSession reloads a durable session and its current roles for background work.
+func (a *App) ActorForSession(id string) (*Actor, error) {
 	ctx := context.Background()
 	for {
-		var session models.Session
-		if err := a.DB.Select("id", "user_id").Where(map[string]any{column: value}).Where("expires_at > ?", time.Now().UnixMilli()).First(&session).Error; err != nil {
+		record, err := a.Sessions.Read(ctx, id)
+		if errors.Is(err, authsession.ErrUnauthenticated) || (err == nil && record.ExpiresAt <= time.Now().UnixMilli()) {
+			return nil, gorm.ErrRecordNotFound
+		}
+		if err != nil {
 			return nil, err
 		}
+		session := record
 		version, err := a.userCacheVersion(ctx, session.UserID)
 		if err != nil {
 			return nil, err
 		}
-		user, err := cachedUserData(ctx, a, constants.TempUserInfo, session.UserID, version, func() (models.User, error) {
-			var user models.User
+		user, err := cachedUserData(ctx, a, constants.TempUserInfo, session.UserID, version, func() (models.AdminUser, error) {
+			var user models.AdminUser
 			err := a.DB.Preload("Roles", "status = ?", models.Enabled).Preload("Posts").First(&user, session.UserID).Error
 			return user, err
 		})
@@ -201,6 +221,3 @@ func (a *App) CheckRoles(current *Actor, ids []uint) error {
 	}
 	return nil
 }
-
-// ActorForSession reloads a durable session and its current roles for background work.
-func (a *App) ActorForSession(id string) (*Actor, error) { return a.authenticateSession("id", id) }

@@ -3,12 +3,17 @@ package admin
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/dawnim/dawn-server/app/models"
+	"github.com/dawnim/dawn-server/support/authsession"
+	"github.com/dawnim/dawn-server/support/customer"
 	"github.com/dawnim/dawn-server/support/i18n"
+	"github.com/dawnim/dawn-server/support/settings"
 
 	"github.com/dawnim/dawn-server/constants"
 	"github.com/dawnim/dawn-server/realtime"
@@ -34,6 +39,9 @@ type App struct {
 	Router                *gin.Engine
 	Disk                  fs.Filesystem
 	Realtime              *realtime.Hub
+	Customer              *customer.Manager
+	Sessions              *authsession.Store
+	Settings              *settings.Store
 	CacheKeys             map[string]constants.Definition
 	PermissionDefinitions map[string]Permission
 	MenuDefinitions       []Menu
@@ -54,6 +62,7 @@ func New(o Options, runtime Runtime, db *gorm.DB, client redis.UniversalClient, 
 		return nil, err
 	}
 	a := &App{Options: o, Runtime: runtime, DB: db, Redis: client, Disk: disk, CacheKeys: map[string]constants.Definition{}, PermissionDefinitions: map[string]Permission{}, SettingDefinitions: map[string]SettingDefinition{}}
+	a.Settings = &settings.Store{Redis: client, Prefix: o.Name + ":" + o.Environment + ":"}
 	for _, d := range append(constants.System(), o.CacheKeys...) {
 		if _, exists := a.CacheKeys[d.Name]; exists {
 			return nil, i18n.Errorf("缓存Key名称重复: %s", d.Name)
@@ -75,7 +84,57 @@ func New(o Options, runtime Runtime, db *gorm.DB, client redis.UniversalClient, 
 		return nil, err
 	}
 
+	var err error
+	a.Sessions, err = authsession.New("admin")
+	if err != nil {
+		return nil, err
+	}
 	a.initRealtime()
+	a.Customer, err = customer.New(a.DB, a.Redis, a.Realtime, o.Name+":"+o.Environment+":")
+	if err != nil {
+		a.Realtime.Close()
+		return nil, err
+	}
+	a.Customer.Storage = o.Storage
+	a.Customer.Wake = a.WakeChat
+	a.Realtime.Connected = a.Customer.VisitorConnected
+	a.Customer.AuthorizeAdmin = func(ctx context.Context, id uint, action string) error {
+		var user models.AdminUser
+		if err := a.DB.WithContext(ctx).Where("status = ?", models.Enabled).First(&user, id).Error; err != nil {
+			return customer.ErrForbidden
+		}
+		if user.Super {
+			return nil
+		}
+		var count int64
+		err := a.DB.WithContext(ctx).Table("admin_role_permissions AS p").Joins("JOIN admin_user_roles AS u ON u.role_id = p.role_id").Joins("JOIN admin_roles AS r ON r.id = p.role_id AND r.status = ? AND r.deleted_at = 0", models.Enabled).Where("u.user_id = ? AND p.key = ?", id, "dawn.support."+action).Count(&count).Error
+		if err != nil {
+			return err
+		}
+		if count == 0 {
+			return customer.ErrForbidden
+		}
+		return nil
+	}
+	if o.Customer != nil {
+		o.Customer(a.Customer)
+	}
+	if err := a.Realtime.Handle("support.input", func(ctx context.Context, p realtime.Principal, data json.RawMessage) (any, error) {
+		var input struct {
+			ConversationID uint   `json:"conversation_id"`
+			Content        string `json:"content"`
+			Sequence       uint64 `json:"sequence"`
+		}
+		if err := json.Unmarshal(data, &input); err != nil {
+			return nil, err
+		}
+		if !strings.HasPrefix(p.Realm, "support:") {
+			return nil, customer.ErrForbidden
+		}
+		return nil, a.Customer.PreviewInput(ctx, p, input.ConversationID, input.Content, input.Sequence)
+	}); err != nil {
+		return nil, err
+	}
 	if o.Realtime != nil {
 		if err := o.Realtime(a, a.Realtime); err != nil {
 			a.Realtime.Close()

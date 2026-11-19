@@ -39,7 +39,10 @@ func TestNativeDatabaseLifecycle(t *testing.T) {
 	if len(records) != 1 || records[0].Migration != "202610300000_install_dawn" || records[0].Batch != 1 || a.DB.Migrator().HasTable("admin_migrations") {
 		t.Fatal("未使用唯一的原生迁移登记", records)
 	}
-	for _, model := range []any{&models.ChatConversation{}, &models.ChatMember{}, &models.ChatMessage{}, &models.ChatEvent{}} {
+	if a.DB.Migrator().HasTable("admin_sessions") || a.DB.Migrator().HasTable("user_sessions") {
+		t.Fatal("登录会话不得创建SQL表")
+	}
+	for _, model := range []any{&models.ChatConversation{}, &models.ChatMember{}, &models.ChatMessage{}, &models.ChatEvent{}, &models.SupportSession{}} {
 		if !a.DB.Migrator().HasTable(model) {
 			t.Fatalf("扩展安装缺少聊天表 %T", model)
 		}
@@ -70,7 +73,7 @@ func TestNativeDatabaseLifecycle(t *testing.T) {
 		}
 	}
 	var count int64
-	if err := a.DB.Model(&models.User{}).Count(&count).Error; err != nil || count != 0 {
+	if err := a.DB.Model(&models.AdminUser{}).Count(&count).Error; err != nil || count != 0 {
 		t.Fatal("迁移混入了初始化数据", count, err)
 	}
 	if err := databaseCommand(a, "db:seed"); err != nil {
@@ -79,12 +82,12 @@ func TestNativeDatabaseLifecycle(t *testing.T) {
 	for _, item := range []struct {
 		model any
 		count int64
-	}{{&models.User{}, 1}, {&models.Department{}, 1}, {&models.Post{}, 1}, {&models.UserPost{}, 1}, {&models.Category{}, 6}, {&models.Setting{}, 3}} {
+	}{{&models.AdminUser{}, 1}, {&models.Department{}, 1}, {&models.Post{}, 1}, {&models.UserPost{}, 1}, {&models.Category{}, 6}, {&models.Setting{}, 4}} {
 		if err := a.DB.Model(item.model).Count(&count).Error; err != nil || count != item.count {
 			t.Fatalf("初始数据 %T: %d %v", item.model, count, err)
 		}
 	}
-	var user models.User
+	var user models.AdminUser
 	if err := a.DB.Preload("Posts").First(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +120,7 @@ func TestNativeDatabaseLifecycle(t *testing.T) {
 			t.Fatal(command, err)
 		}
 	}
-	if err := a.DB.Model(&models.User{}).Count(&count).Error; err != nil || count != 1 {
+	if err := a.DB.Model(&models.AdminUser{}).Count(&count).Error; err != nil || count != 1 {
 		t.Fatal("重新安装失败", count, err)
 	}
 }
@@ -132,7 +135,7 @@ func TestNativeSeederPreservesData(t *testing.T) {
 	if err := databaseCommand(a, "dawn:install"); err != nil {
 		t.Fatal(err)
 	}
-	var user models.User
+	var user models.AdminUser
 	if err := a.DB.First(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +201,7 @@ func TestNativeSeederPreservesData(t *testing.T) {
 		t.Fatal("重复初始化无意义地更新配置", err)
 	}
 	var count int64
-	if err := a.DB.Model(&models.User{}).Count(&count).Error; err != nil || count != 1 {
+	if err := a.DB.Model(&models.AdminUser{}).Count(&count).Error; err != nil || count != 1 {
 		t.Fatal("重复创建了账号", count, err)
 	}
 	if err := a.DB.Model(&models.Category{}).Count(&count).Error; err != nil || count != 7 {

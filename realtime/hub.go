@@ -32,6 +32,9 @@ type Principal struct {
 	SessionID string `json:"session_id"`
 }
 
+// ErrResumeInvalid表示实时恢复凭证失效，不代表账号登录失效。
+var ErrResumeInvalid = errors.New("恢复会话无效,请重新建立连接")
+
 type Message struct {
 	Type      string          `json:"type"`
 	ID        string          `json:"id,omitempty"`
@@ -51,7 +54,7 @@ type Hub struct {
 	Validate  func(context.Context, Principal) error
 	Authorize func(context.Context, Principal, string) error
 	// AuthorizeEvent checks permissions again before an inbox or channel event is delivered.
-	AuthorizeEvent func(context.Context, Principal, string) error
+	AuthorizeEvent func(context.Context, Principal, Message) error
 	// Connected runs after authentication; Disconnected runs when that connection exits.
 	Connected    func(context.Context, Principal) error
 	Disconnected func(context.Context, Principal)
@@ -130,6 +133,9 @@ func (h *Hub) Ticket(ctx context.Context, p Principal, resume, locale string) (s
 	s := session{Principal: p, Resume: resume}
 	if resume != "" {
 		raw, err := h.Redis.Get(ctx, h.key(constants.TempWSSession, hash(resume))).Bytes()
+		if errors.Is(err, redis.Nil) {
+			return "", ErrResumeInvalid
+		}
 		if err != nil {
 			return "", err
 		}
@@ -137,7 +143,7 @@ func (h *Hub) Ticket(ctx context.Context, p Principal, resume, locale string) (s
 			return "", err
 		}
 		if s.Principal != p {
-			return "", i18n.Errorf("恢复凭证不属于当前登录会话")
+			return "", ErrResumeInvalid
 		}
 	} else {
 		s.Resume = rand.Text()
@@ -227,14 +233,6 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx = i18n.WithLocale(ctx, current.Locale)
-	if h.Connected != nil {
-		if err := h.Connected(ctx, current.Principal); err != nil {
-			return
-		}
-	}
-	if h.Disconnected != nil {
-		defer h.Disconnected(ctx, current.Principal)
-	}
 	stateKey := h.key(constants.TempWSSession, hash(current.Resume))
 	leaseKey := h.key(constants.TempWSLease, hash(current.Resume))
 	connectionID := rand.Text()
@@ -246,6 +244,22 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			slog.Error("释放WS连接租约失败", "error", err)
 		}
 	}()
+	presenceKey := h.key(constants.TempWSPresence, hash(current.Principal.Realm), hash(current.Principal.Subject))
+	touchPresence := func() error {
+		return h.Redis.Eval(ctx, `if redis.call('GET',KEYS[1]) ~= ARGV[1] then return 0 end;redis.call('ZADD',KEYS[2],ARGV[2],ARGV[1]);redis.call('PEXPIRE',KEYS[2],ARGV[3]);return 1`, []string{leaseKey, presenceKey}, connectionID, time.Now().UnixMilli(), constants.TempWSPresence.TTL.Milliseconds()).Err()
+	}
+	if err := touchPresence(); err != nil {
+		return
+	}
+	defer func() { _ = h.Redis.ZRem(context.WithoutCancel(ctx), presenceKey, connectionID).Err() }()
+	if h.Connected != nil {
+		if err := h.Connected(ctx, current.Principal); err != nil {
+			return
+		}
+	}
+	if h.Disconnected != nil {
+		defer h.Disconnected(ctx, current.Principal)
+	}
 	write := func(message Message) error {
 		if message.Type == "error" {
 			var key string
@@ -268,7 +282,12 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err := conn.SetReadDeadline(time.Now().Add(time.Minute)); err != nil {
 		return
 	}
-	conn.SetPongHandler(func(string) error { return conn.SetReadDeadline(time.Now().Add(time.Minute)) })
+	conn.SetPongHandler(func(string) error {
+		if err := touchPresence(); err != nil {
+			return err
+		}
+		return conn.SetReadDeadline(time.Now().Add(time.Minute))
+	})
 	incoming := make(chan Message, 8)
 	go func() {
 		defer cancel()
@@ -346,6 +365,9 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if err := h.Validate(ctx, current.Principal); err != nil {
+				return
+			}
+			if err := touchPresence(); err != nil {
 				return
 			}
 			switch message.Type {
@@ -458,11 +480,12 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				for _, message := range messages {
-					if h.AuthorizeEvent != nil && h.AuthorizeEvent(ctx, current.Principal, fmt.Sprint(message.Values["type"])) != nil {
+					event := Message{Type: fmt.Sprint(message.Values["type"]), ID: message.ID, Channel: channel, Data: json.RawMessage(fmt.Sprint(message.Values["data"]))}
+					if h.AuthorizeEvent != nil && h.AuthorizeEvent(ctx, current.Principal, event) != nil {
 						cursors[channel] = message.ID
 						continue
 					}
-					if err := write(Message{Type: fmt.Sprint(message.Values["type"]), ID: message.ID, Channel: channel, Data: json.RawMessage(fmt.Sprint(message.Values["data"]))}); err != nil {
+					if err := write(event); err != nil {
 						return
 					}
 					cursors[channel] = message.ID
@@ -497,4 +520,10 @@ func compareID(a, b string) int {
 		}
 	}
 	return 0
+}
+
+// Presence 返回身份下最近有效连接的活动时间，所有标签页与实例共享租约。
+func (h *Hub) Presence(ctx context.Context, p Principal) (int64, error) {
+	key := h.key(constants.TempWSPresence, hash(p.Realm), hash(p.Subject))
+	return h.Redis.Eval(ctx, `redis.call('ZREMRANGEBYSCORE',KEYS[1],'-inf',ARGV[1]);local v=redis.call('ZREVRANGE',KEYS[1],0,0,'WITHSCORES');if #v==0 then return 0 end;return tonumber(v[2])`, []string{key}, time.Now().Add(-time.Minute).UnixMilli()).Int64()
 }

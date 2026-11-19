@@ -1,0 +1,111 @@
+.chat-markdown {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.chat-markdown > :first-child {
+  margin-top: 0;
+}
+.chat-markdown > :last-child {
+  margin-bottom: 0;
+}
+.chat-markdown p,
+.chat-markdown ul,
+.chat-markdown ol,
+.chat-markdown blockquote,
+.chat-markdown pre,
+.chat-markdown table {
+  margin: 0.65em 0;
+}
+.chat-markdown h1,
+.chat-markdown h2,
+.chat-markdown h3,
+.chat-markdown h4,
+.chat-markdown h5,
+.chat-markdown h6 {
+  margin: 0.85em 0 0.4em;
+  font-size: 1.08em;
+  font-weight: 650;
+  line-height: 1.5;
+}
+.chat-markdown h1 {
+  font-size: 1.3em;
+}
+.chat-markdown h2 {
+  font-size: 1.18em;
+}
+.chat-markdown ul,
+.chat-markdown ol {
+  padding-left: 1.5em;
+}
+.chat-markdown ul {
+  list-style: disc;
+}
+.chat-markdown ol {
+  list-style: decimal;
+}
+.chat-markdown li + li {
+  margin-top: 0.2em;
+}
+.chat-markdown li > p {
+  margin: 0.25em 0;
+}
+.chat-markdown a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.chat-markdown blockquote {
+  padding-left: 0.8em;
+  border-left: 3px solid currentColor;
+  opacity: 0.8;
+}
+.chat-markdown code {
+  padding: 0.12em 0.35em;
+  border-radius: 4px;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+  font:
+    0.9em/1.6 ui-monospace,
+    SFMono-Regular,
+    Consolas,
+    monospace;
+}
+.chat-markdown pre {
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 0.75em 0.9em;
+  border-radius: 7px;
+  background: color-mix(in srgb, currentColor 5%, transparent);
+  white-space: pre;
+}
+.chat-markdown pre code {
+  padding: 0;
+  background: none;
+}
+.chat-markdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+.chat-markdown th,
+.chat-markdown td {
+  padding: 0.4em 0.65em;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+}
+.chat-markdown hr {
+  margin: 0.8em 0;
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+}
+.chat-markdown .inline-emoji {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.12em;
+  font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
+  font-size: 1em;
+  line-height: 1;
+  white-space: nowrap;
+}

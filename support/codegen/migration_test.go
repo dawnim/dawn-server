@@ -1,4 +1,4 @@
-package controllers
+package codegen
 
 import (
 	"os"
@@ -83,11 +83,11 @@ func TestGeneratedMigrationRoundTrip(t *testing.T) {
 	if err := db.Migrator().DropTable(&migrationFixture{}); err != nil {
 		t.Fatal(err)
 	}
-	module, err := os.ReadFile("../../../go.mod")
+	module, err := os.ReadFile("../../go.mod")
 	if err != nil {
 		t.Fatal(err)
 	}
-	sum, err := os.ReadFile("../../../go.sum")
+	sum, err := os.ReadFile("../../go.sum")
 	if err != nil {
 		t.Fatal(err)
 	}

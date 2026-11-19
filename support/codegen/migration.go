@@ -1,4 +1,4 @@
-package controllers
+package codegen
 
 import (
 	"database/sql"
@@ -27,7 +27,8 @@ func columnGoType(column gorm.ColumnType) string {
 	return kind
 }
 
-func tableIndexes(db *gorm.DB, table string) ([]gorm.Index, error) {
+// Indexes includes unique constraints omitted by some GORM drivers.
+func Indexes(db *gorm.DB, table string) ([]gorm.Index, error) {
 	// PostgreSQL驱动排除了约束索引，原生查询同时保留组合索引的列顺序。
 	if db.Dialector.Name() == "postgres" {
 		var rows []struct {
@@ -75,9 +76,9 @@ func tableIndexes(db *gorm.DB, table string) ([]gorm.Index, error) {
 	return indexes, nil
 }
 
-// generateMigration 将当前结构固定在迁移中，后续修改业务模型不会改变这份建表记录。
-func generateMigration(db *gorm.DB, table string, columns []gorm.ColumnType) ([]byte, error) {
-	indexes, err := tableIndexes(db, table)
+// columnIndexTags preserves unique and composite indexes on generated models and snapshots.
+func columnIndexTags(db *gorm.DB, table string) (map[string][]string, error) {
+	indexes, err := Indexes(db, table)
 	if err != nil {
 		return nil, err
 	}
@@ -93,6 +94,15 @@ func generateMigration(db *gorm.DB, table string, columns []gorm.ColumnType) ([]
 		for i, field := range index.Columns() {
 			indexTags[field] = append(indexTags[field], fmt.Sprintf("%s:%s,priority:%d", kind, index.Name(), i+1))
 		}
+	}
+	return indexTags, nil
+}
+
+// generateMigration fixes the current structure independently of the business model.
+func generateMigration(db *gorm.DB, table string, columns []gorm.ColumnType) ([]byte, error) {
+	indexTags, err := columnIndexTags(db, table)
+	if err != nil {
+		return nil, err
 	}
 	var fields strings.Builder
 	for _, column := range columns {

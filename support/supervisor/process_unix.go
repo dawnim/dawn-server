@@ -6,19 +6,32 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"strconv"
 	"syscall"
-
-	"github.com/dawnim/dawn-server/support/i18n"
 )
 
+var errManagerRunning = errors.New("本项目已有服务管理器运行，请使用控制命令")
+
 func lockManager(path string) (*os.File, error) {
+	if value := os.Getenv("DAWN_MANAGER_LOCK_FD"); value != "" {
+		_ = os.Unsetenv("DAWN_MANAGER_LOCK_FD")
+		fd, err := strconv.Atoi(value)
+		if err != nil {
+			return nil, err
+		}
+		closeOnExec(fd)
+		return os.NewFile(uintptr(fd), path), nil
+	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
 	}
 	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = file.Close()
-		return nil, i18n.Errorf("本项目已有服务管理器运行，请使用控制命令")
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, errManagerRunning
+		}
+		return nil, err
 	}
 	return file, nil
 }

@@ -11,13 +11,17 @@ import (
 	"time"
 
 	"github.com/dawnim/dawn-server/app/admin"
+	"github.com/dawnim/dawn-server/database/migrations"
+	"github.com/dawnim/dawn-server/database/schema"
 	"github.com/dawnim/dawn-server/support/i18n"
 	"github.com/dawnim/dawn-server/support/supervisor"
 	"github.com/prismgo/framework/config"
 	"github.com/prismgo/framework/console"
+	"github.com/prismgo/framework/container"
 	prismhttp "github.com/prismgo/framework/http"
 	"github.com/prismgo/framework/support"
 	"github.com/prismgo/horizon"
+	"gorm.io/gorm"
 )
 
 // ServiceCommand 是管理器派生子进程的执行入口，不递归启动管理器。
@@ -32,6 +36,26 @@ func (*ServiceCommand) Definition() *console.Definition {
 func (*ServiceCommand) Handle(ctx console.CommandContext) (result error) {
 	defer func() { result = i18n.Localize(result, i18n.Locale(ctx.Context())) }()
 	name := ctx.Input().Argument("service")
+	if name == "embedding" {
+		return runEmbedding(ctx.Context())
+	}
+	if name != "frontend" && name != "http" && name != "ws" && name != "horizon" && name != "cron" {
+		return i18n.Errorf("未知服务: %s", name)
+	}
+	if name != "frontend" {
+		if err := supervisor.Wait(ctx.Context(), func(checkCtx context.Context) error {
+			db, err := container.Make[*gorm.DB]("database.default")
+			if err != nil {
+				return err
+			}
+			return migrations.CheckDefinition(checkCtx, db, schema.Resolve())
+		}); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return err
+		}
+	}
 	if name == "frontend" {
 		port := strconv.Itoa(config.GetInt("dawn.local.port", 5173))
 		server := prismhttp.CurrentServerConfig()
@@ -104,9 +128,6 @@ func (*ServiceCommand) Handle(ctx console.CommandContext) (result error) {
 		}
 		return ctx.Call("cron")
 	}
-	if name != "http" && name != "ws" {
-		return i18n.Errorf("未知服务: %s", name)
-	}
 	a := admin.Resolve()
 	if err := a.Redis.Ping(ctx.Context()).Err(); err != nil {
 		return err
@@ -139,6 +160,9 @@ func (*ServiceCommand) Handle(ctx console.CommandContext) (result error) {
 	if name == "ws" {
 		stopped := make(chan struct{})
 		go func() { defer close(stopped); a.DispatchChat(runCtx) }()
+		telegramDone := make(chan struct{})
+		go func() { defer close(telegramDone); a.Customer.RunTelegram(runCtx) }()
+		defer func() { cancel(); <-telegramDone }()
 		defer func() { cancel(); <-stopped }()
 	}
 	var readyErr error

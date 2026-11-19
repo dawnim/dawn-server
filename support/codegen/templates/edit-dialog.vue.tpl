@@ -31,8 +31,15 @@
             : []
         "
       >
+        <DawnRadio
+          v-if="column.dict"
+          v-model="formData[column.prop]"
+          :dict="column.dict"
+          :value-type="column.dictValueType || 'number'"
+          :disabled="dialogType === 'edit' && column.immutable"
+        />
         <ElSelect
-          v-if="column.options"
+          v-else-if="column.options"
           v-model="formData[column.prop]"
           :disabled="dialogType === 'edit' && column.immutable"
         >
@@ -48,7 +55,11 @@
           v-model="formData[column.prop]"
           :disabled="dialogType === 'edit' && column.immutable"
         />
-        <ElSwitch v-else-if="column.type === 'boolean'" v-model="formData[column.prop]" />
+        <ElSwitch
+          v-else-if="column.type === 'boolean'"
+          v-model="formData[column.prop]"
+          :disabled="dialogType === 'edit' && column.immutable"
+        />
         <ElInput
           v-else
           v-model="formData[column.prop]"
@@ -92,7 +103,7 @@
     ElMessage,
     type FormInstance
   } from 'element-plus'
-  import type { Column, CrudApi } from '@dawnim/admin'
+  import { DawnRadio, type Column, type CrudApi } from '@dawnim/admin'
   const { t } = useI18n()
   const props = defineProps<{
     modelValue: boolean
@@ -113,8 +124,11 @@
   const formData = reactive<Record<string, any>>({})
   watch(
     () => props.modelValue,
-    async (opened) => {
+    async (opened, _, onCleanup) => {
       if (!opened) return
+      let active = true
+      onCleanup(() => (active = false))
+      reading.value = false
       const defaults = Object.fromEntries(
         props.columns
           .filter((column) => !column.readonly)
@@ -128,11 +142,13 @@
       if (props.dialogType === 'edit' && props.data) {
         reading.value = true
         try {
-          Object.assign(formData, await props.api.get(props.data.id))
+          const row = await props.api.get(props.data.id)
+          if (!active) return
+          Object.assign(formData, row)
         } catch {
-          visible.value = false
+          if (active) visible.value = false
         } finally {
-          reading.value = false
+          if (active) reading.value = false
         }
       }
       props.columns
@@ -147,7 +163,16 @@
       return
     saving.value = true
     try {
-      const input = Object.fromEntries(props.columns.filter((column) => !column.readonly && !(props.dialogType === 'edit' && column.immutable)).map((column) => [column.prop, formData[column.prop]]))
+      const input = Object.fromEntries(
+        props.columns
+          .filter(
+            (column) => !column.readonly && !(props.dialogType === 'edit' && column.immutable)
+          )
+          .map((column) => [
+            column.prop,
+            column.nullable ? (formData[column.prop] ?? null) : formData[column.prop]
+          ])
+      )
       if (props.dialogType === 'add') await props.api.create(input)
       else await props.api.update(props.data!.id, input)
       ElMessage.success(t(props.dialogType === 'add' ? '新增成功' : '修改成功'))

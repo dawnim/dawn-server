@@ -2,7 +2,6 @@ package tests
 
 import (
 	"bytes"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
@@ -11,7 +10,6 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/dawnim/dawn-server/app/admin"
 	"github.com/dawnim/dawn-server/app/models"
 	"github.com/dawnim/dawn-server/constants"
 	"github.com/dawnim/dawn-server/realtime"
@@ -61,7 +59,7 @@ func TestUserManagement(t *testing.T) {
 		t.Fatal(err)
 	}
 	hash, _ := bcrypt.GenerateFromPassword([]byte("123456"), bcrypt.MinCost)
-	users := []models.User{
+	users := []models.AdminUser{
 		{Username: "manager", Password: string(hash), Status: 1, DepartmentID: 20, Roles: []models.Role{roles[0]}},
 		{Username: "worker", Password: string(hash), Status: 1, DepartmentID: 12, Roles: []models.Role{roles[2]}},
 		{Username: "peer", Password: string(hash), Status: 1, DepartmentID: 11, Roles: []models.Role{roles[0]}},
@@ -74,10 +72,7 @@ func TestUserManagement(t *testing.T) {
 	}
 	session := func(id uint) string {
 		t.Helper()
-		token := rand.Text()
-		if err := a.DB.Create(&models.Session{ID: rand.Text(), UserID: id, AccessHash: admin.TokenHash(token), RefreshHash: admin.TokenHash(rand.Text()), ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}).Error; err != nil {
-			t.Fatal(err)
-		}
+		_, token := testSession(t, a, id)
 		return token
 	}
 	root, manager, worker := session(1), session(users[0].ID), session(users[1].ID)

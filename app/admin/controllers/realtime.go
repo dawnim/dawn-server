@@ -22,7 +22,7 @@ func (a *Controller) RealtimeRoutes(g *route.Registrar) {
 		current := middleware.Actor(c)
 		ticket, err := a.Realtime.Ticket(c.Request.Context(), realtime.Principal{Realm: "admin", Subject: strconv.FormatUint(uint64(current.User.ID), 10), SessionID: current.SessionID}, input.Resume, c.GetString("admin.locale"))
 		if err != nil {
-			response.Fail(c, 401, "恢复会话无效,请重新建立连接")
+			response.Report(c, err)
 			return
 		}
 		response.Respond(c, gin.H{"ticket": ticket})

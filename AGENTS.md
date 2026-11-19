@@ -18,6 +18,16 @@
 
 管理员聊天的模型、表结构、接口、消息投递与运行装配由dawn-server完整提供，表和索引纳入统一安装迁移；前端由dawn-admin提供。业务工程只注册、配置和安装扩展，业务实时处理器独立于内置聊天。
 
+## CRUD开发
+
+- 新增普通CRUD必须先通过后台代码生成或`dawn:generate`生成，再补充业务逻辑；修改已有CRUD沿用其标准结构。引用模式用于通用CRUD，源码模式用于定制，不从零复制控制器和页面。
+- 先通过迁移或完整结构同步建立业务表。后台与CLI共用`support/codegen`和模板；默认输出到应用根目录，其他目标通过`--output`、`--backend`、`--frontend`、`--module`指定。AI先执行`go run . dawn:generate records --mode=full --preview --json`检查，再去掉`--preview`生成。完整用法见[代码生成教程](https://github.com/dawnim/dawn-simple/blob/main/docs/backend.md)。
+- 通用能力有缺口时先修公共实现和引用、源码两种模式，再生成使用，不在各业务模块另补一套。结构、接口、前端、公开类型、语言包和文档同步修改，不添加兼容分支或无实际复用的封装。
+- 优先保留生成的`RegisterResource`；独立处理使用源码模式和`RegisterResourceRoutes`，特殊业务操作单独登记。保留统一REST、响应、分页、排序、批量删除与CSV协议，具体遵循下文REST接口约定；权限key保持稳定。
+- 明确可写字段与必要业务校验，主键、毫秒时间、软删除和归属由服务端维护。PATCH保留未提交字段，PUT恢复省略字段的默认值；合法的0、false、空字符串和可空字段正常写入。时间更新交给ORM，不额外比较数据或手动维护审计字段。
+- 列表、计数、详情、写入、删除、导出和下载使用一致Scope。批量写入、删除与导入使用事务，失败整批回滚；提交成功后再清理缓存、派发事件。
+- 引用与源码模式保持相同的字段、权限、数据范围、校验、列表交互和导入导出能力，均输出独立API与zh/en字段语言包；可选迁移生成独立结构快照，不修改已发布迁移。生成源码须独立编译并验证实际CRUD，迁移只在专用空库执行。
+
 ## 编码
 
 - 优先标准库和已有运行时能力。直接实现简单逻辑；确有多处复用再提取函数。业务层按需要增加，不为形式创建Service/Repository。
@@ -71,8 +81,6 @@ DAWN_TEST_DRIVER=pgsql DAWN_TEST_DSN='专用DSN' go test -run 'Test(Application|
 
 系统配置按组一行保存JSON，中文名称落库，表单元数据留在代码定义；初始化只补缺失字段，不覆盖用户配置值。缓存按组使用独立Hash，每个Field对应组内参数，保留__revision版本防止旧值回写。保密配置加密保存，不写入附件位置快照。新增存储驱动复用统一文件系统接口；校验切换驱动后旧附件仍可读取。
 
-代码生成的引用模式和源码模式保留相同的标准列表交互，均输出独立API与zh/en字段语言包。迁移按勾选生成独立结构快照；后续字段变化增加新的迁移，不修改已发布迁移。生成文件需独立编译，迁移在专用空库执行验证。
-
 ## 语言与文案
 
 固定界面、错误和通知文案通过翻译函数使用中文原文key。中文直接回退原文，zh语言包只保存fields等技术标识的中文显示映射；英文及其他语言包以中文原文key定义译文。接口字段名保持原样。缺少译文时使用key并渲染占位符；修改中文措辞时同步调用处、key和各语言译文。中文尽量不加中间空格，句末不加标点；命令、路径、代码保留必要空格。
@@ -91,10 +99,10 @@ HTTP接口以复数资源和方法表达操作：GET集合/详情，POST新增�
 
 批量删除使用DELETE集合?ids=1,2，一次请求、一份事务；必须提供明确ID，不允许整集合删除。写入只接受公开字段，主键、审计与归属字段由服务端维护。PATCH未提交的字段保持原值；PUT必须提供必填字段，省略的可选字段恢复模型默认值或零值。两者均正常写入0、false、空字符串；null只允许可空字段。
 
-列表参数为page、page_size、sort_by、sort_order，默认1/20，不设置每页条数上限。排序使用白名单并追加主键保证稳定；计数、列表、详情、写入和导出使用一致的数据范围。普通列表返回{data:[],meta:{page,page_size,total}}，树返回{data:[]}，Redis使用明确游标。禁止前端伪造总数、固定第一页或静默截断数据。
+列表参数为page、page_size、sort_by、sort_order，默认1/10，不设置每页条数上限。排序使用白名单并追加主键保证稳定；计数、列表、详情、写入和导出使用一致的数据范围。普通列表返回{data:[],meta:{page,page_size,total}}，树返回{data:[]}，Redis使用明确游标。禁止前端伪造总数、固定第一页或静默截断数据。
 
 成功使用HTTP状态：查询/修改200，新增201并设置Location，删除204无正文；详情/新增/修改返回{data:...}，错误返回{message,errors?}。前端只在统一request层解包，不能依赖业务code或兼容多套响应。分页越界需重新取有效页的数据。
 
 CSV导出是GET集合的text/csv表示，沿用当前筛选但忽略分页；导入使用POST集合/imports和multipart的file字段，模板为GET集合/import-template。导入事务验证全部行，不忽略错误；文件响应不套JSON。
 
-前端模块API统一list/get/create/update/replace/remove/removeMany，update(id,input)使用PATCH，replace(id,input)使用PUT，组件通过API调用。生成器的引用模式与源码模式遵循同一协议、字段、权限、导入导出和校验规则；同时维护公开类型、模板与文档。源代码和安装包都需编译与实际CRUD验证。
+前端模块API统一list/get/create/update/replace/remove/removeMany，update(id,input)使用PATCH，replace(id,input)使用PUT，组件通过API调用。

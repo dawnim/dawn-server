@@ -47,10 +47,11 @@ func (a *App) registerMenus() error {
 		{Key: "dawn.home", ParentKey: "dawn.dashboard", Title: "工作台", Path: "/dashboard/console", Component: "/dashboard/console", Icon: "ri:home-smile-2-line", Sort: 0},
 		{Key: "dawn.profile", ParentKey: "dawn.dashboard", Title: "个人中心", Path: "/dashboard/user-center", Component: "/dashboard/user-center", Hidden: true, Sort: 1000},
 		{Key: "dawn.system", Title: "系统管理", Path: "/system", Icon: "ri:user-3-line", Sort: 10},
+		{Key: "dawn.support", Title: "客户服务", Path: "/support", Icon: "ri:customer-service-2-line", Sort: 15},
 		{Key: "dawn.maintenance", Title: "运维管理", Path: "/maintenance", Icon: "ri:shield-check-line", Sort: 20},
 		{Key: "dawn.development", Title: "开发工具", Path: "/development", Icon: "ri:tools-line", Sort: 30},
 	}
-	icons := map[string]string{"users": "ri:user-line", "roles": "ri:admin-line", "departments": "ri:node-tree", "posts": "ri:signpost-line", "menus": "ri:menu-line", "settings": "ri:settings-4-line", "attachments": "ri:file-cloud-line", "logs": "ri:shield-keyhole-line", "cache": "ri:keyboard-box-line", "server": "ri:server-line", "database": "ri:database-line", "generator": "ri:code-s-slash-line", "horizon": "ri:stack-line"}
+	icons := map[string]string{"users": "ri:user-line", "roles": "ri:admin-line", "departments": "ri:node-tree", "posts": "ri:signpost-line", "menus": "ri:menu-line", "settings": "ri:settings-4-line", "attachments": "ri:file-cloud-line", "logs": "ri:shield-keyhole-line", "cache": "ri:keyboard-box-line", "server": "ri:server-line", "database": "ri:database-line", "generator": "ri:code-s-slash-line", "horizon": "ri:stack-line", "members": "ri:user-search-line", "support_apps": "ri:apps-2-line", "knowledge": "ri:book-open-line"}
 	titles := map[string]string{"list": "查看", "create": "新增", "update": "修改", "delete": "删除", "export": "导出", "dashboard": "设置首页", "cache": "清理缓存", "password": "重置密码", "permissions": "角色授权"}
 	for _, item := range []struct{ name, title, parent, component, actions string }{
 		{"users", "用户管理", "dawn.system", "/system/user", "list create update delete dashboard cache password"},
@@ -65,14 +66,20 @@ func (a *App) registerMenus() error {
 		{"server", "服务监控", "dawn.maintenance", "/safeguard/server", "list"},
 		{"database", "数据表维护", "dawn.maintenance", "/safeguard/database", "list update"},
 		{"generator", "代码生成", "dawn.development", "/tool/code", "list create"},
+		{"support_apps", "客服应用", "dawn.support", "/support/apps", "list create update delete"},
+		{"knowledge", "知识库", "dawn.support", "/support/knowledge", "list create update delete export"},
+		{"members", "访客管理", "dawn.support", "/system/member", "list create update delete export"},
 		{"horizon", "队列监控", "dawn.maintenance", "/safeguard/horizon", "list"},
 	} {
 		key := "dawn." + item.name
-		a.MenuDefinitions = append(a.MenuDefinitions, Menu{Key: key, ParentKey: item.parent, Title: item.title, Path: item.component, Component: item.component, Permission: key + ".list", Icon: icons[item.name], Sort: map[string]int{"users": 10, "departments": 20, "roles": 30, "posts": 40, "menus": 50, "settings": 60, "attachments": 10, "database": 20, "server": 30, "cache": 40, "logs": 60, "generator": 10, "horizon": 80}[item.name]})
+		a.MenuDefinitions = append(a.MenuDefinitions, Menu{Key: key, ParentKey: item.parent, Title: item.title, Path: item.component, Component: item.component, Permission: key + ".list", Icon: icons[item.name], Sort: map[string]int{"users": 10, "departments": 20, "roles": 30, "posts": 40, "menus": 50, "settings": 60, "attachments": 10, "database": 20, "server": 30, "cache": 40, "logs": 60, "generator": 10, "horizon": 80, "support_apps": 10, "knowledge": 20, "members": 30}[item.name]})
 		for _, action := range strings.Fields(item.actions) {
 			permission := Permission{Key: key + "." + action, Title: titles[action], ParentKey: key}
 			a.PermissionDefinitions[permission.Key] = permission
 		}
+	}
+	for _, p := range []Permission{{Key: "dawn.support.view", Title: "查看客服会话", ParentKey: "dawn.support"}, {Key: "dawn.support.reply", Title: "接待客户", ParentKey: "dawn.support"}} {
+		a.PermissionDefinitions[p.Key] = p
 	}
 	for _, p := range a.Options.Permissions {
 		if !StableKey.MatchString(p.Key) || strings.HasPrefix(p.Key, "dawn.") || strings.HasPrefix(p.Key, "custom.") {

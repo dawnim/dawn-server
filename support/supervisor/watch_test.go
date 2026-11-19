@@ -32,7 +32,7 @@ func TestWatchProcess(t *testing.T) {
 	defer app.Close()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	if err := Watch(ctx, directory, filepath.Join(directory, "storage"), func(binary string) error {
+	if err := Watch(ctx, directory, filepath.Join(directory, "storage"), os.Stdout, func(binary string) error {
 		output, err := exec.CommandContext(ctx, binary).CombinedOutput()
 		fmt.Printf("RELOAD %s|%s\n", binary, strings.TrimSpace(string(output)))
 		return err

@@ -3,6 +3,7 @@ package controllers
 import (
 	"cmp"
 	"encoding/json"
+	"github.com/dawnim/dawn-server/support/codegen"
 	"regexp"
 	"slices"
 	"sort"
@@ -107,7 +108,7 @@ func (a *Controller) DatabaseRoutes(g *route.Registrar) {
 			response.Fail(c, 404, "数据表不存在")
 			return
 		}
-		indexes, err := tableIndexes(a.DB, table)
+		indexes, err := codegen.Indexes(a.DB, table)
 		if err != nil {
 			response.Report(c, err)
 			return
@@ -291,5 +292,5 @@ func (a *Controller) DatabaseRoutes(g *route.Registrar) {
 
 }
 
-var recyclable = map[string]any{"users": &models.User{}, "roles": &models.Role{}, "departments": &models.Department{}, "posts": &models.Post{}, "attachments": &models.Attachment{}, "categories": &models.Category{}, "menus": &models.Menu{}}
+var recyclable = map[string]any{"users": &models.AdminUser{}, "roles": &models.Role{}, "departments": &models.Department{}, "posts": &models.Post{}, "attachments": &models.Attachment{}, "categories": &models.Category{}, "menus": &models.Menu{}}
 var identifier = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)

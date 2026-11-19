@@ -153,7 +153,7 @@ func TestApplication(t *testing.T) {
 	if status != 200 || result["data"].(map[string]any)["is_super"] != true {
 		t.Fatal(result)
 	}
-	var admin models.User
+	var admin models.AdminUser
 	if err := a.DB.First(&admin).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -640,7 +640,7 @@ func TestApplication(t *testing.T) {
 }
 
 func TestDataScope(t *testing.T) {
-	actor := &admin.Actor{User: models.User{Base: models.Base{ID: 10}, DepartmentID: 3, Roles: []models.Role{{Status: models.Enabled, DataScope: models.ScopeDepartment}}}}
+	actor := &admin.Actor{User: models.AdminUser{Base: models.Base{ID: 10}, DepartmentID: 3, Roles: []models.Role{{Status: models.Enabled, DataScope: models.ScopeDepartment}}}}
 	redis := miniredis.RunT(t)
 	a, err := newTestApp(testOptions{DBDSN: ":memory:", Storage: t.TempDir(), RedisURL: "redis://" + redis.Addr()})
 	if err != nil {
@@ -719,7 +719,7 @@ func TestDataScope(t *testing.T) {
 }
 
 func TestRoleLevel(t *testing.T) {
-	actor := admin.Actor{User: models.User{Roles: []models.Role{{Status: models.Enabled, Level: 1}, {Status: models.Enabled, Level: 2000}, {Status: models.Disabled, Level: 9000}}}}
+	actor := admin.Actor{User: models.AdminUser{Roles: []models.Role{{Status: models.Enabled, Level: 1}, {Status: models.Enabled, Level: 2000}, {Status: models.Disabled, Level: 9000}}}}
 	if actor.Level() != 2000 {
 		t.Fatal("角色级别不应被固定上限截断", actor.Level())
 	}

@@ -4,6 +4,7 @@ package dawn
 import (
 	"github.com/dawnim/dawn-server/app/admin"
 	"github.com/dawnim/dawn-server/app/providers"
+	"github.com/dawnim/dawn-server/database/schema"
 	"github.com/dawnim/dawn-server/routes"
 	"github.com/gin-gonic/gin"
 	pc "github.com/prismgo/framework/contracts/provider"
@@ -17,14 +18,18 @@ import (
 )
 
 // ServiceProvider installs admin services and SQL drivers.
-type ServiceProvider struct{ Configure func(*admin.Options) }
+type ServiceProvider struct {
+	Configure func(*admin.Options)
+	// Schema customizes the complete target without resolving the admin runtime.
+	Schema func(*schema.Definition)
+}
 
 // Register declares lazy bindings without resolving infrastructure.
 func (p ServiceProvider) Register(app pc.Application) error {
 	if err := (horizon.ServiceProvider{}).Register(app); err != nil {
 		return err
 	}
-	return (providers.AdminServiceProvider{Configure: p.Configure}).Register(app)
+	return (providers.AdminServiceProvider{Configure: p.Configure, Schema: p.Schema}).Register(app)
 }
 
 // Boot 注册数据库驱动与后台命令。

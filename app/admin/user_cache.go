@@ -43,7 +43,7 @@ func cachedUserData[T any](ctx context.Context, a *App, definition constants.Def
 // 自定义代码直接修改账号、角色或菜单后，在事务提交后调用。
 func (a *App) ClearUserCaches(ctx context.Context, ids ...uint) error {
 	if len(ids) == 0 {
-		if err := a.DB.WithContext(ctx).Unscoped().Model(&models.User{}).Pluck("id", &ids).Error; err != nil {
+		if err := a.DB.WithContext(ctx).Unscoped().Model(&models.AdminUser{}).Pluck("id", &ids).Error; err != nil {
 			return err
 		}
 	}

@@ -19,14 +19,16 @@ type request struct {
 	PID        int             `json:"pid,omitempty"`
 	Specs      map[string]Spec `json:"specs,omitempty"`
 	Executable string          `json:"executable,omitempty"`
+	Runtime    *RuntimeStats   `json:"runtime,omitempty"`
 }
 
 type Response struct {
-	PID         int      `json:"pid"`
-	TerminalPID int      `json:"terminal_pid,omitempty"`
-	Replaced    bool     `json:"replaced,omitempty"`
-	Services    []Status `json:"services"`
-	Error       string   `json:"error,omitempty"`
+	PID         int          `json:"pid"`
+	TerminalPID int          `json:"terminal_pid,omitempty"`
+	Replaced    bool         `json:"replaced,omitempty"`
+	Services    []Status     `json:"services"`
+	Error       string       `json:"error,omitempty"`
+	Manager     ProcessStats `json:"manager"`
 }
 
 // Control 向已经运行的本地管理器提交操作并等待结果。
@@ -61,7 +63,7 @@ func Parse(selection, action string) ([]string, error) {
 	}
 	for i, name := range names {
 		names[i] = strings.TrimSpace(name)
-		if !slices.Contains([]string{"http", "ws", "horizon", "cron", "frontend"}, names[i]) {
+		if !slices.Contains([]string{"http", "ws", "horizon", "cron", "frontend", "embedding"}, names[i]) {
 			return nil, i18n.Errorf("未知服务: %s", name)
 		}
 		if action == "reload" && names[i] != "http" && names[i] != "ws" {

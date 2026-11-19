@@ -59,6 +59,11 @@ func Register(application *foundation.Application, e *gin.Engine) error {
 	controller.GeneratorRoutes(g)
 	controller.RealtimeRoutes(g)
 	controller.ChatRoutes(g)
+	controller.SupportRoutes(g)
+	controller.KnowledgeRoutes(g)
+	controller.SkillRoutes(g)
+	controller.MemberRoutes(g)
+	controller.SupportPublicRoutes()
 	invalidateUsers := func(ctx context.Context) error { return a.ClearUserCaches(ctx) }
 	controllers.RegisterResource(a, g, controllers.Resource[models.Department]{Path: "/departments", Permission: "dawn.departments", Fields: []string{"name", "parent_id", "leader", "phone", "email", "sort", "status", "remark"}, Search: []string{"name"}, Tree: true})
 	controllers.RegisterResource(a, g, controllers.Resource[models.Post]{AfterWrite: invalidateUsers, Path: "/posts", Permission: "dawn.posts", Fields: []string{"name", "code", "sort", "status", "remark"}, Search: []string{"name", "code"}, Importable: true})

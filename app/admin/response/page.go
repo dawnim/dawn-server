@@ -8,10 +8,12 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const DefaultPageSize = 10
+
 // Page 保留调用方指定的条数，不设置固定上限。
 func Page(c *gin.Context) (int, int) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	size, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	size, _ := strconv.Atoi(c.DefaultQuery("page_size", strconv.Itoa(DefaultPageSize)))
 	return max(1, page), max(1, size)
 }
 

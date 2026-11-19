@@ -30,6 +30,12 @@ func HandleCommand(ctx context.Context, app *foundation.Application, argv []stri
 			return err
 		}
 		defer stopParent()
+		if socket := os.Getenv("DAWN_CONTROL_SOCKET"); socket != "" {
+			reportCtx, cancel := context.WithCancel(ctx)
+			done := make(chan struct{})
+			go func() { defer close(done); supervisor.ReportRuntime(reportCtx, socket) }()
+			defer func() { cancel(); <-done }()
+		}
 		supervisor.ConfigureHorizon()
 		command, err := newConsoleCommand(app.NewConsoleKernel(), argv)
 		if err != nil {

@@ -2,7 +2,9 @@ package supervisor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -29,9 +31,11 @@ type service struct {
 	name      string
 	spec      Spec
 	directory string
+	socket    string
 	commands  chan operation
 	mu        sync.RWMutex
 	status    Status
+	output    io.Writer
 	listener  *net.TCPListener
 }
 
@@ -42,7 +46,12 @@ type child struct {
 	started  time.Time
 	stopFile string
 	lifeline *os.File
+	ready    <-chan readiness
+	reader   *os.File
+	waiting  string
 }
+
+var stateLabels = map[string]string{"running": "运行中", "starting": "启动中", "waiting": "等待就绪", "backoff": "等待重试", "stopped": "已停止", "stopping": "停止中"}
 
 func (s *service) snapshot() Status {
 	s.mu.RLock()
@@ -52,21 +61,32 @@ func (s *service) snapshot() Status {
 
 func (s *service) publish(state string, wanted bool, p *child, err error) {
 	s.mu.Lock()
+	previousState, previousError := s.status.State, s.status.LastError
 	s.status.State, s.status.Wanted, s.status.PID = state, wanted, 0
+	s.status.Address = s.spec.URL
 	if p != nil {
 		s.status.PID, s.status.StartedAt = p.cmd.Process.Pid, p.started.UnixMilli()
 	}
 	if err != nil {
 		s.status.LastError = i18n.Message(err, "")
-	} else if state == "running" {
+	} else if state == "running" || state == "stopping" || state == "stopped" {
 		s.status.LastError = ""
 	}
+	message := s.status.LastError
 	s.mu.Unlock()
+	if s.output != nil && (previousState != state || previousError != message) {
+		text := i18n.Text("", stateLabels[state])
+		if message != "" {
+			text += ": " + message
+		}
+		_, _ = fmt.Fprintln(s.output, text)
+	}
 }
 
 func (s *service) run(ctx context.Context) {
 	var current *child
 	var exited <-chan struct{}
+	var ready <-chan readiness
 	var retry <-chan time.Time
 	wanted, backoff := false, time.Second
 	defer func() {
@@ -118,7 +138,7 @@ func (s *service) run(ctx context.Context) {
 				if current != nil {
 					s.stop(current)
 				}
-				current, exited = nil, nil
+				current, exited, ready = nil, nil, nil
 				if s.listener != nil {
 					_ = s.listener.Close()
 					s.listener = nil
@@ -135,14 +155,23 @@ func (s *service) run(ctx context.Context) {
 			if op.action == "restart" && current != nil {
 				s.publish("stopping", true, current, nil)
 				s.stop(current)
-				current, exited = nil, nil
+				current, exited, ready = nil, nil, nil
 			}
 			s.publish("starting", true, current, nil)
 			next, err := s.spawn(ctx)
+			if err == nil && current != nil && next.waiting != "" {
+				s.stop(next)
+				err = errors.New(next.waiting)
+			}
 			if err == nil {
 				old := current
-				current, exited = next, next.done
-				s.publish("running", true, current, nil)
+				current, exited, ready = next, next.done, next.ready
+				if next.waiting != "" {
+					s.publish("waiting", true, current, errors.New(next.waiting))
+				} else {
+					ready = nil
+					s.publish("running", true, current, nil)
+				}
 				if old != nil {
 					s.stop(old)
 				}
@@ -154,6 +183,18 @@ func (s *service) run(ctx context.Context) {
 				s.publish("running", wanted, current, err)
 			}
 			op.reply <- err
+		case state := <-ready:
+			if state.State == "ready" {
+				ready = nil
+				s.publish("running", wanted, current, nil)
+			} else if state.State == "waiting" {
+				s.publish("waiting", wanted, current, errors.New(state.Error))
+			} else {
+				s.stop(current)
+				current, exited, ready = nil, nil, nil
+				s.publish("backoff", wanted, nil, errors.New(state.Error))
+				retry = time.After(backoff)
+			}
 		case <-exited:
 			err := current.err
 			if err == nil {
@@ -163,7 +204,7 @@ func (s *service) run(ctx context.Context) {
 				backoff = time.Second
 			}
 			s.stop(current)
-			current, exited = nil, nil
+			current, exited, ready = nil, nil, nil
 			s.publish("backoff", wanted, nil, err)
 			logger.Error("Dawn service exited", map[string]any{"service": s.name, "error": err, "retry": backoff.String()})
 			retry = time.After(backoff)
@@ -181,8 +222,13 @@ func (s *service) run(ctx context.Context) {
 				retry = time.After(backoff)
 				backoff = min(2*backoff, 30*time.Second)
 			} else {
-				current, exited = next, next.done
-				s.publish("running", wanted, current, nil)
+				current, exited, ready = next, next.done, next.ready
+				if next.waiting != "" {
+					s.publish("waiting", wanted, current, errors.New(next.waiting))
+				} else {
+					ready = nil
+					s.publish("running", wanted, current, nil)
+				}
 			}
 		}
 	}
@@ -207,6 +253,12 @@ func (s *service) spawn(ctx context.Context) (*child, error) {
 	}
 	cmd := exec.Command(s.spec.Command[0], s.spec.Command[1:]...)
 	cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr = s.spec.Dir, append(os.Environ(), s.spec.Env...), os.Stdout, os.Stderr
+	if s.socket != "" {
+		cmd.Env = append(cmd.Env, "DAWN_CONTROL_SOCKET="+s.socket)
+	}
+	if s.output != nil {
+		cmd.Stdout, cmd.Stderr = s.output, s.output
+	}
 	if !s.spec.JoinGroup {
 		configureProcess(cmd)
 	}
@@ -224,22 +276,41 @@ func (s *service) spawn(ctx context.Context) (*child, error) {
 		cmd.ExtraFiles = append(cmd.ExtraFiles, file)
 		cmd.Env = append(cmd.Env, "PRISMGO_HTTP_LISTENER_FD=3")
 	}
-	var ready <-chan error
 	if s.spec.Probe == "" {
 		reader, writer, err := os.Pipe()
 		if err != nil {
 			return nil, err
 		}
-		defer reader.Close()
+		p.reader = reader
 		defer writer.Close()
 		cmd.ExtraFiles = append(cmd.ExtraFiles, writer)
 		cmd.Env = append(cmd.Env, "DAWN_READY_FD="+strconv.Itoa(2+len(cmd.ExtraFiles)))
-		result := make(chan error, 1)
-		go func() { var b [1]byte; _, err := io.ReadFull(reader, b[:]); result <- err }()
-		ready = result
+		result := make(chan readiness, 1)
+		go func() {
+			decoder := json.NewDecoder(reader)
+			for {
+				var state readiness
+				if err := decoder.Decode(&state); err != nil {
+					state = readiness{State: "failed", Error: err.Error()}
+				}
+				select {
+				case result <- state:
+				case <-p.done:
+					return
+				}
+				if state.State != "waiting" {
+					return
+				}
+			}
+		}()
+		p.ready = result
 	}
 	parent, lifeline, err := os.Pipe()
 	if err != nil {
+		if p.reader != nil {
+			_ = p.reader.Close()
+		}
+		close(p.done)
 		return nil, err
 	}
 	defer parent.Close()
@@ -249,13 +320,23 @@ func (s *service) spawn(ctx context.Context) (*child, error) {
 	cmd.Env = append(cmd.Env, "DAWN_STOP_TIMEOUT="+max(s.spec.Timeout, time.Second).String())
 	if err := cmd.Start(); err != nil {
 		_ = lifeline.Close()
+		if p.reader != nil {
+			_ = p.reader.Close()
+		}
+		close(p.done)
 		return nil, err
 	}
 	// 父进程不得持有子进程的管道写端，否则子进程退出无法通过 EOF 被识别。
 	if s.spec.Probe == "" {
 		_ = cmd.ExtraFiles[len(cmd.ExtraFiles)-2].Close()
 	}
-	go func() { p.err = cmd.Wait(); close(p.done) }()
+	go func() {
+		p.err = cmd.Wait()
+		if output, ok := s.output.(*logWriter); ok {
+			output.Flush()
+		}
+		close(p.done)
+	}()
 	timeout := time.NewTimer(30 * time.Second)
 	defer timeout.Stop()
 	tick := time.NewTicker(100 * time.Millisecond)
@@ -263,10 +344,15 @@ func (s *service) spawn(ctx context.Context) (*child, error) {
 	err = nil
 	for {
 		select {
-		case err = <-ready:
-			if err == nil {
+		case state := <-p.ready:
+			if state.State == "ready" {
 				return p, nil
 			}
+			if state.State == "waiting" {
+				p.waiting = state.Error
+				return p, nil
+			}
+			err = errors.New(state.Error)
 		case <-tick.C:
 			if s.spec.Probe == "" {
 				continue
@@ -323,6 +409,9 @@ func (s *service) stop(p *child) {
 		_ = terminateProcess(p.cmd.Process.Pid, true)
 	}
 	_ = p.lifeline.Close()
+	if p.reader != nil {
+		_ = p.reader.Close()
+	}
 	if p.stopFile != "" {
 		_ = os.Remove(p.stopFile)
 	}
@@ -330,19 +419,7 @@ func (s *service) stop(p *child) {
 
 // Ready 通过父进程提供的管道报告本服务已经就绪。
 func Ready() error {
-	value := os.Getenv("DAWN_READY_FD")
-	if value == "" {
-		return nil
-	}
-	fd, err := strconv.Atoi(value)
-	if err != nil {
-		return err
-	}
-	file := os.NewFile(uintptr(fd), "dawn-ready")
-	defer file.Close()
-	_ = os.Unsetenv("DAWN_READY_FD")
-	_, err = file.Write([]byte{1})
-	return err
+	return reportReady(readiness{State: "ready"})
 }
 
 // WatchParent 在管理器异常消失时通知当前 Application 收尾。

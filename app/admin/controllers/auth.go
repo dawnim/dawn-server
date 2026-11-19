@@ -15,6 +15,7 @@ import (
 	"github.com/dawnim/dawn-server/app/admin/response"
 	"github.com/dawnim/dawn-server/app/models"
 	"github.com/dawnim/dawn-server/constants"
+	"github.com/dawnim/dawn-server/support/authsession"
 	"github.com/dawnim/dawn-server/support/i18n"
 	"github.com/dchest/captcha"
 	"github.com/gin-gonic/gin"
@@ -76,7 +77,7 @@ func (a *Controller) AuthRoutes(g *route.Registrar) {
 			response.Report(c, err)
 			return
 		}
-		var user models.User
+		var user models.AdminUser
 		err = a.DB.Where("username = ? AND status = ?", input.Username, models.Enabled).First(&user).Error
 		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			response.Report(c, err)
@@ -94,15 +95,12 @@ func (a *Controller) AuthRoutes(g *route.Registrar) {
 			response.Fail(c, 401, "账号或密码错误")
 			return
 		}
-		token, refresh := rand.Text(), rand.Text()
-		now := time.Now().UnixMilli()
-		session := models.Session{ID: rand.Text(), UserID: user.ID, AccessHash: admin.TokenHash(token), RefreshHash: admin.TokenHash(refresh), ExpiresAt: time.Now().Add(a.Options.AccessTTL).UnixMilli(), RefreshExpiresAt: time.Now().Add(a.Options.RefreshTTL).UnixMilli(), IP: c.ClientIP(), UserAgent: c.Request.UserAgent()}
-		if err := a.DB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-			if err := tx.Create(&session).Error; err != nil {
-				return err
-			}
-			return tx.Model(&user).Update("login_time", now).Error
-		}); err != nil {
+		if err := a.DB.WithContext(ctx).Model(&user).Update("login_time", time.Now().UnixMilli()).Error; err != nil {
+			response.Report(c, err)
+			return
+		}
+		_, token, refresh, err := a.Sessions.Create(ctx, authsession.Record{UserID: user.ID, IP: c.ClientIP(), UserAgent: c.Request.UserAgent()}, a.Options.AccessTTL, a.Options.RefreshTTL)
+		if err != nil {
 			response.Report(c, err)
 			return
 		}
@@ -128,16 +126,16 @@ func (a *Controller) AuthRoutes(g *route.Registrar) {
 			response.Fail(c, 422, "缺少刷新凭证")
 			return
 		}
-		var old models.Session
-		if err := a.DB.Where("refresh_hash = ? AND refresh_expires_at > ?", admin.TokenHash(input.Token), time.Now().UnixMilli()).First(&old).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				response.Fail(c, 401, "刷新凭证已失效")
-			} else {
-				response.Report(c, err)
-			}
+		old, err := a.Sessions.Authenticate(c.Request.Context(), input.Token, true)
+		if errors.Is(err, authsession.ErrUnauthenticated) {
+			response.Fail(c, 401, "刷新凭证已失效")
 			return
 		}
-		var user models.User
+		if err != nil {
+			response.Report(c, err)
+			return
+		}
+		var user models.AdminUser
 		if err := a.DB.Where("status = ?", models.Enabled).First(&user, old.UserID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				response.Fail(c, 401, "账号已失效")
@@ -146,14 +144,13 @@ func (a *Controller) AuthRoutes(g *route.Registrar) {
 			}
 			return
 		}
-		token, refresh := rand.Text(), rand.Text()
-		result := a.DB.Model(&models.Session{}).Where("id = ? AND refresh_hash = ?", old.ID, admin.TokenHash(input.Token)).Updates(map[string]any{"access_hash": admin.TokenHash(token), "refresh_hash": admin.TokenHash(refresh), "expires_at": time.Now().Add(a.Options.AccessTTL).UnixMilli(), "refresh_expires_at": time.Now().Add(a.Options.RefreshTTL).UnixMilli()})
-		if result.Error != nil {
-			response.Report(c, result.Error)
+		token, refresh, err := a.Sessions.Refresh(c.Request.Context(), input.Token, a.Options.AccessTTL, a.Options.RefreshTTL)
+		if errors.Is(err, authsession.ErrUnauthenticated) {
+			response.Fail(c, 401, "刷新凭证已经使用")
 			return
 		}
-		if result.RowsAffected == 0 {
-			response.Fail(c, 401, "刷新凭证已经使用")
+		if err != nil {
+			response.Report(c, err)
 			return
 		}
 		c.SetSameSite(http.SameSiteLaxMode)
@@ -161,7 +158,7 @@ func (a *Controller) AuthRoutes(g *route.Registrar) {
 		response.Respond(c, gin.H{"access_token": token, "refresh_token": refresh, "expires_in": int(a.Options.AccessTTL.Seconds())})
 	})
 	g.Post("/auth/logout", middleware.Require(a.App, ""), func(c *gin.Context) {
-		if err := a.DB.Delete(&models.Session{}, "id = ?", middleware.Actor(c).SessionID).Error; err != nil {
+		if err := a.Sessions.Revoke(c.Request.Context(), middleware.Actor(c).SessionID); err != nil {
 			response.Report(c, err)
 			return
 		}
@@ -214,7 +211,7 @@ func (a *Controller) AuthRoutes(g *route.Registrar) {
 			response.Fail(c, 422, "资料格式错误")
 			return
 		}
-		if err := a.DB.Model(&models.User{}).Where("id = ?", middleware.Actor(c).User.ID).Updates(input).Error; err != nil {
+		if err := a.DB.Model(&models.AdminUser{}).Where("id = ?", middleware.Actor(c).User.ID).Updates(input).Error; err != nil {
 			response.Report(c, err)
 			return
 		}
@@ -233,7 +230,7 @@ func (a *Controller) AuthRoutes(g *route.Registrar) {
 			response.Fail(c, 422, "新密码长度须为6至72字符")
 			return
 		}
-		var user models.User
+		var user models.AdminUser
 		if err := a.DB.Select("id", "password").First(&user, middleware.Actor(c).User.ID).Error; err != nil {
 			response.Report(c, err)
 			return
@@ -247,12 +244,11 @@ func (a *Controller) AuthRoutes(g *route.Registrar) {
 			response.Report(c, err)
 			return
 		}
-		if err := a.DB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-			if err := tx.Model(&models.User{}).Where("id = ?", middleware.Actor(c).User.ID).Update("password", string(hash)).Error; err != nil {
-				return err
-			}
-			return tx.Delete(&models.Session{}, "user_id = ?", middleware.Actor(c).User.ID).Error
-		}); err != nil {
+		if err := a.DB.WithContext(c.Request.Context()).Model(&models.AdminUser{}).Where("id = ?", user.ID).Update("password", string(hash)).Error; err != nil {
+			response.Report(c, err)
+			return
+		}
+		if err := a.Sessions.RevokeUsers(c.Request.Context(), user.ID); err != nil {
 			response.Report(c, err)
 			return
 		}

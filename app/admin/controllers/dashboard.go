@@ -19,7 +19,7 @@ func (a *Controller) DashboardRoutes(g *route.Registrar) {
 			model             any
 			owner, department string
 		}{
-			{"user", &models.User{}, "id", "department_id"},
+			{"user", &models.AdminUser{}, "id", "department_id"},
 			{"attach", &models.Attachment{}, "created_by", ""},
 		} {
 			var count int64

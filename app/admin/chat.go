@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/dawnim/dawn-server/app/models"
@@ -35,6 +37,13 @@ func (a *App) DispatchChat(ctx context.Context) {
 			if err := a.PublishChatEvents(ctx); err != nil && ctx.Err() == nil {
 				slog.Error("发布聊天事件失败", "error", err)
 				nextCheck = time.Now().Add(5 * time.Second)
+			}
+			if err := a.Customer.ExpireOffline(ctx); err != nil && ctx.Err() == nil {
+				slog.Warn("检查访客离线失败", "error", err)
+			}
+			_ = a.Customer.AssignWaiting(ctx)
+			if err := a.Customer.DispatchPending(ctx); err != nil && ctx.Err() == nil {
+				slog.Warn("客服任务等待队列恢复", "error_type", fmt.Sprintf("%T", err))
 			}
 		}
 		// Short blocking Redis reads allow prompt shutdown without polling SQL.
@@ -79,9 +88,45 @@ func (a *App) PublishChatEvents(ctx context.Context) error {
 				EventID uint            `json:"event_id"`
 				Data    json.RawMessage `json:"data"`
 			}{event.ID, event.Data}
+			var conv models.ChatConversation
+			if err := db.First(&conv, event.ConversationID).Error; err != nil {
+				return err
+			}
+			var visibility struct {
+				Visibility string `json:"visibility"`
+			}
+			_ = json.Unmarshal(event.Data, &visibility)
 			for _, member := range members {
+				if visibility.Visibility != "" && visibility.Visibility != "public" && member.Realm != "admin" {
+					continue
+				}
+				if conv.Type == "support" && member.Realm == "admin" {
+					id, _ := strconv.ParseUint(member.Subject, 10, 64)
+					if a.Customer.AgentAccess(ctx, conv.AppID, uint(id), "view") != nil {
+						continue
+					}
+				}
 				if _, err := a.Realtime.Publish(ctx, realtime.Principal{Realm: member.Realm, Subject: member.Subject}, event.Type, data); err != nil {
 					return err
+				}
+			}
+			if conv.Type == "support" {
+				if err := a.Customer.QueueTelegram(ctx, conv, event); err != nil {
+					return err
+				}
+			}
+			if conv.Type == "support" && (visibility.Visibility == "" || visibility.Visibility == "public") {
+				_, cfg, _, err := a.Customer.App(ctx, conv.AppID)
+				if err != nil {
+					return err
+				}
+				for _, id := range cfg.AgentIDs {
+					if a.Customer.AgentAccess(ctx, conv.AppID, id, "view") != nil {
+						continue
+					}
+					if _, err := a.Realtime.Publish(ctx, realtime.Principal{Realm: "admin", Subject: strconv.FormatUint(uint64(id), 10)}, "support.inbox.updated", map[string]any{"conversation_id": conv.ID, "app_id": conv.AppID}); err != nil {
+						return err
+					}
 				}
 			}
 			return nil

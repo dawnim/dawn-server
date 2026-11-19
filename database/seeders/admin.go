@@ -8,6 +8,7 @@ import (
 	"github.com/dawnim/dawn-server/app/models"
 	"github.com/dawnim/dawn-server/constants"
 	"github.com/dawnim/dawn-server/support/i18n"
+	"github.com/dawnim/dawn-server/support/identity"
 	"github.com/prismgo/framework/config"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -16,6 +17,9 @@ import (
 
 // Seed 补齐系统基础数据，不覆盖已有账号、配置值和自定义分类。
 func Seed(db *gorm.DB) error {
+	if err := identity.Install(db.Statement.Context, db); err != nil {
+		return err
+	}
 	a := admin.Resolve()
 	ctx := db.Statement.Context
 	defaults := map[string]map[string]json.RawMessage{}
@@ -35,7 +39,7 @@ func Seed(db *gorm.DB) error {
 		defaults[group][field] = value
 		names[group] = i18n.Text("zh", definition.Group)
 	}
-	var user models.User
+	var user models.AdminUser
 	if err := db.Transaction(func(tx *gorm.DB) error {
 		department := models.Department{Name: "Dawn", Status: models.Enabled}
 		if err := tx.Where("name = ? AND parent_id = ?", department.Name, 0).FirstOrCreate(&department).Error; err != nil {
@@ -58,7 +62,7 @@ func Seed(db *gorm.DB) error {
 			if err != nil {
 				return err
 			}
-			user = models.User{Username: username, Password: string(hash), Realname: "超级管理员", Status: models.Enabled, Super: true, DepartmentID: department.ID}
+			user = models.AdminUser{Username: username, Password: string(hash), Realname: "超级管理员", Status: models.Enabled, Super: true, DepartmentID: department.ID}
 			if err := tx.Create(&user).Error; err != nil {
 				return err
 			}
@@ -109,7 +113,8 @@ func Seed(db *gorm.DB) error {
 		return err
 	}
 	// 数据提交后失效缓存，读取时按实际连接重建，支持db:seed --database。
-	keys := make([]string, 0, len(defaults))
+	keys := make([]string, 1, len(defaults)+1)
+	keys[0] = a.Key(constants.ForeverSettings, identity.SettingKey)
 	for group := range defaults {
 		keys = append(keys, a.Key(constants.ForeverSettings, group))
 	}

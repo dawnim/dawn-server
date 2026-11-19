@@ -11,6 +11,8 @@ type File struct {
 	Path      string         `json:"-" gorm:"not null;size:500;comment:存储路径"`
 	MIME      string         `json:"mime" gorm:"not null;size:150;comment:文件媒体类型"`
 	CreatedAt int64          `json:"created_at" gorm:"not null;autoCreateTime:milli"`
+	UpdatedAt int64          `json:"updated_at" gorm:"not null;autoUpdateTime:milli;comment:最后一次被内容引用的时间"`
+	UsedCount int64          `json:"used_count" gorm:"not null;default:0;comment:累计被内容引用次数"`
 }
 
 func (File) TableName() string { return "admin_files" }

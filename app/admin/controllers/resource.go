@@ -17,6 +17,7 @@ import (
 // Resource 只描述重复的CRUD，业务约束由所属模块提供。
 type Resource[T any] struct {
 	Path, Permission         string
+	Name                     string // 可选的独立路由名称前缀
 	Fields, Search, Required []string
 	Tree, Importable         bool
 	Scope                    func(*gorm.DB, *admin.Actor) *gorm.DB
@@ -27,6 +28,7 @@ type Resource[T any] struct {
 }
 
 func RegisterResource[T any](a *admin.App, g *route.Registrar, r Resource[T]) {
+	handlers := ResourceHandlers{Name: r.Name}
 	query := func(c *gin.Context, writing bool) *gorm.DB {
 		db := a.DB.WithContext(c.Request.Context()).Model(new(T))
 		if r.Scope != nil {
@@ -51,7 +53,7 @@ func RegisterResource[T any](a *admin.App, g *route.Registrar, r Resource[T]) {
 	}
 	writable := slices.DeleteFunc(slices.Clone(r.Fields), func(field string) bool { return field == "created_by" || field == "department_id" })
 	writeCSV := RegisterResourceFiles(a, g, r, filtered)
-	g.Get(r.Path, middleware.Require(a, r.Permission+".list"), func(c *gin.Context) {
+	handlers.Index = func(c *gin.Context) {
 		if c.NegotiateFormat("application/json", "text/csv") == "text/csv" {
 			if !middleware.Actor(c).Can(r.Permission + ".export") {
 				response.Fail(c, 403, "没有操作权限")
@@ -81,8 +83,8 @@ func RegisterResource[T any](a *admin.App, g *route.Registrar, r Resource[T]) {
 		} else {
 			response.Paginated(c, rows, total, page, size)
 		}
-	}).Name(r.Permission + ".index")
-	g.Get(r.Path+"/{id}", middleware.Require(a, r.Permission+".list"), func(c *gin.Context) {
+	}
+	handlers.Show = func(c *gin.Context) {
 		id := response.ID(c)
 		if c.IsAborted() {
 			return
@@ -93,8 +95,8 @@ func RegisterResource[T any](a *admin.App, g *route.Registrar, r Resource[T]) {
 			return
 		}
 		response.Respond(c, row)
-	}).Name(r.Permission + ".show")
-	g.Post(r.Path, middleware.Require(a, r.Permission+".create"), func(c *gin.Context) {
+	}
+	handlers.Store = func(c *gin.Context) {
 		var row T
 		submitted := BindResourceInput(a.DB, c, &row, writable)
 		if submitted == nil {
@@ -129,8 +131,8 @@ func RegisterResource[T any](a *admin.App, g *route.Registrar, r Resource[T]) {
 		_ = stmt.Parse(&row)
 		id, _ := stmt.Schema.PrioritizedPrimaryField.ValueOf(c.Request.Context(), reflect.ValueOf(&row))
 		response.Created(c, row, fmt.Sprintf("%s/%v", c.Request.URL.Path, id))
-	}).Name(r.Permission + ".store")
-	update := func(c *gin.Context) {
+	}
+	handlers.Update = func(c *gin.Context) {
 		id := response.ID(c)
 		if c.IsAborted() {
 			return
@@ -174,8 +176,8 @@ func RegisterResource[T any](a *admin.App, g *route.Registrar, r Resource[T]) {
 		}
 		response.Respond(c, row)
 	}
-	g.Match([]string{"PUT", "PATCH"}, r.Path+"/{id}", middleware.Require(a, r.Permission+".update"), update).Name(r.Permission + ".update")
-	remove := func(c *gin.Context) {
+
+	handlers.Destroy = func(c *gin.Context) {
 		ids := response.IDs(c)
 		if c.IsAborted() {
 			return
@@ -209,6 +211,6 @@ func RegisterResource[T any](a *admin.App, g *route.Registrar, r Resource[T]) {
 		}
 		c.Status(204)
 	}
-	g.Delete(r.Path, middleware.Require(a, r.Permission+".delete"), remove).Name(r.Permission + ".destroy-many")
-	g.Delete(r.Path+"/{id}", middleware.Require(a, r.Permission+".delete"), remove).Name(r.Permission + ".destroy")
+
+	RegisterResourceRoutes(a, g, r.Path, r.Permission, handlers)
 }

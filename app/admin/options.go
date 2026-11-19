@@ -6,6 +6,7 @@ import (
 
 	"github.com/dawnim/dawn-server/constants"
 	"github.com/dawnim/dawn-server/realtime"
+	"github.com/dawnim/dawn-server/support/customer"
 	fs "github.com/prismgo/framework/contracts/filesystem"
 	"github.com/prismgo/framework/route"
 )
@@ -30,6 +31,7 @@ type Options struct {
 	WSValidate     func(context.Context, realtime.Principal) error
 	WSAuthorize    func(context.Context, realtime.Principal, string) error
 	Realtime       func(*App, *realtime.Hub) error
+	Customer       func(*customer.Manager)
 	AccessTTL      time.Duration
 	RefreshTTL     time.Duration
 }

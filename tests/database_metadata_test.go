@@ -1,7 +1,6 @@
 package tests
 
 import (
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
@@ -9,10 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/dawnim/dawn-server/app/admin"
 	"github.com/dawnim/dawn-server/app/models"
 )
 
@@ -34,15 +31,11 @@ func TestDatabaseMetadata(t *testing.T) {
 	if err := databaseCommand(a, "db:seed"); err != nil {
 		t.Fatal(err)
 	}
-	var user models.User
+	var user models.AdminUser
 	if err := a.DB.Where("username = ?", "metadata_admin").First(&user).Error; err != nil {
 		t.Fatal(err)
 	}
-	token := rand.Text()
-	expires := time.Now().Add(time.Hour).UnixMilli()
-	if err := a.DB.Create(&models.Session{ID: rand.Text(), UserID: user.ID, AccessHash: admin.TokenHash(token), RefreshHash: admin.TokenHash(rand.Text()), ExpiresAt: expires, RefreshExpiresAt: expires}).Error; err != nil {
-		t.Fatal(err)
-	}
+	_, token := testSession(t, a, user.ID)
 	for _, sql := range []string{
 		`CREATE TABLE metadata_records (id BIGINT PRIMARY KEY, code VARCHAR(64) UNIQUE,
 			bucket VARCHAR(32), region VARCHAR(32), amount DECIMAL(12,2) DEFAULT 0,
@@ -70,7 +63,7 @@ func TestDatabaseMetadata(t *testing.T) {
 		}
 		return response.Code, result
 	}
-	status, result := call("/tables", token)
+	status, result := call("/tables?name=metadata_records", token)
 	if status != 200 {
 		t.Fatal(result)
 	}

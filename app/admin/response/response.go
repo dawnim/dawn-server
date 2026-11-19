@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/dawnim/dawn-server/realtime"
+	"github.com/dawnim/dawn-server/support/customer"
 	"github.com/dawnim/dawn-server/support/i18n"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -32,6 +34,16 @@ func Report(c *gin.Context, err error, status ...int) {
 		return
 	}
 	switch {
+	case errors.Is(err, customer.ErrUnauthenticated):
+		Fail(c, 401, err.Error())
+	case errors.Is(err, customer.ErrForbidden):
+		Fail(c, 403, err.Error())
+	case errors.Is(err, customer.ErrInvalid):
+		Fail(c, 422, err.Error())
+	case errors.Is(err, realtime.ErrResumeInvalid), errors.Is(err, customer.ErrConflict), errors.Is(err, customer.ErrClosureExpired), errors.Is(err, customer.ErrRated), errors.Is(err, customer.ErrRatingUnavailable):
+		Fail(c, 409, err.Error())
+	case errors.Is(err, customer.ErrLimited):
+		Fail(c, 429, err.Error())
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		Fail(c, 404, "记录不存在")
 	case errors.Is(err, gorm.ErrDuplicatedKey):

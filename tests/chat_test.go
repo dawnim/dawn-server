@@ -3,7 +3,6 @@ package tests
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
@@ -13,7 +12,6 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/dawnim/dawn-server/app/admin"
 	"github.com/dawnim/dawn-server/app/models"
 	"github.com/dawnim/dawn-server/realtime"
 	"github.com/gorilla/websocket"
@@ -31,7 +29,7 @@ func TestChat(t *testing.T) {
 	if err := databaseCommand(a, "migrate"); err != nil {
 		t.Fatal(err)
 	}
-	users := []models.User{
+	users := []models.AdminUser{
 		{Username: "alice", Status: 1, Super: true},
 		{Username: "bob", Status: 1, Super: true},
 		{Username: "outsider", Status: 1, Super: true},
@@ -43,10 +41,8 @@ func TestChat(t *testing.T) {
 		if err := a.DB.Create(&users[i]).Error; err != nil {
 			t.Fatal(err)
 		}
-		tokens[i], sessions[i] = rand.Text(), rand.Text()
-		if err := a.DB.Create(&models.Session{ID: sessions[i], UserID: users[i].ID, AccessHash: admin.TokenHash(tokens[i]), RefreshHash: rand.Text(), ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}).Error; err != nil {
-			t.Fatal(err)
-		}
+		record, token := testSession(t, a, users[i].ID)
+		tokens[i], sessions[i] = token, record.ID
 	}
 	handler, err := a.Handler()
 	if err != nil {
@@ -224,6 +220,9 @@ func TestChatDispatcherSleepsUntilWake(t *testing.T) {
 	time.Sleep(1200 * time.Millisecond)
 	if queries.Load() != 1 {
 		t.Fatal("idle dispatcher polled SQL", queries.Load())
+	}
+	if err := a.DB.Create(&models.ChatConversation{ID: 1, Type: "direct", Identify: "wake-test"}).Error; err != nil {
+		t.Fatal(err)
 	}
 	if err := a.DB.Create(&models.ChatMember{ConversationID: 1, Realm: "admin", Subject: "1"}).Error; err != nil {
 		t.Fatal(err)

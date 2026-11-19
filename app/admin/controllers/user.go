@@ -1,16 +1,17 @@
 package controllers
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
-	"github.com/dawnim/dawn-server/realtime"
 	"slices"
 	"strconv"
-	"time"
 
 	"github.com/dawnim/dawn-server/app/admin/middleware"
 	"github.com/dawnim/dawn-server/app/admin/response"
 	"github.com/dawnim/dawn-server/app/models"
+	"github.com/dawnim/dawn-server/realtime"
+	"github.com/dawnim/dawn-server/support/authsession"
 	"github.com/gin-gonic/gin"
 	"github.com/prismgo/framework/route"
 	"golang.org/x/crypto/bcrypt"
@@ -18,13 +19,14 @@ import (
 )
 
 type userInput struct {
-	models.User
+	models.AdminUser
 	Password string `json:"password" binding:"omitempty,min=6,max=72"`
 	RoleIDs  []uint `json:"role_ids" gorm:"serializer:json"`
 	PostIDs  []uint `json:"post_ids" gorm:"serializer:json"`
 }
 
 func (a *Controller) UserRoutes(g *route.Registrar) {
+	handlers := ResourceHandlers{}
 	for resource, permission := range map[string]string{"departments": "dawn.departments", "roles": "dawn.roles", "posts": "dawn.posts"} {
 		g.Get("/"+resource+"/options", middleware.Require(a.App, ""), func(c *gin.Context) {
 			current := middleware.Actor(c)
@@ -74,11 +76,11 @@ func (a *Controller) UserRoutes(g *route.Registrar) {
 		})
 	}
 	query := func(c *gin.Context, connection *gorm.DB) *gorm.DB {
-		db := connection.WithContext(c.Request.Context()).Model(&models.User{}).Scopes(middleware.Actor(c).Scope("admin_users.id", "admin_users.department_id"))
+		db := connection.WithContext(c.Request.Context()).Model(&models.AdminUser{}).Scopes(middleware.Actor(c).Scope("admin_users.id", "admin_users.department_id"))
 		return db.Preload("Roles").Preload("Posts")
 	}
-	g.Get("/users", middleware.Require(a.App, "dawn.users.list"), func(c *gin.Context) {
-		db := a.DB.WithContext(c.Request.Context()).Model(&models.User{}).Preload("Roles").Preload("Posts")
+	handlers.Index = func(c *gin.Context) {
+		db := a.DB.WithContext(c.Request.Context()).Model(&models.AdminUser{}).Preload("Roles").Preload("Posts")
 		for _, field := range []string{"username", "phone", "email"} {
 			if v := c.Query(field); v != "" {
 				db = db.Where(field+" LIKE ?", "%"+v+"%")
@@ -96,7 +98,7 @@ func (a *Controller) UserRoutes(g *route.Registrar) {
 			return
 		}
 		page, size := response.Page(c)
-		var users []models.User
+		var users []models.AdminUser
 		if err := db.Offset((page - 1) * size).Limit(size).Order(response.Order(c, "id", "username", "login_time", "created_at")).Order("id DESC").Find(&users).Error; err != nil {
 			response.Report(c, err)
 			return
@@ -107,7 +109,7 @@ func (a *Controller) UserRoutes(g *route.Registrar) {
 		}
 		var allowed []uint
 		if len(ids) > 0 {
-			if err := a.DB.Model(&models.User{}).Scopes(middleware.Actor(c).Scope("admin_users.id", "admin_users.department_id")).Where("id IN ?", ids).Pluck("id", &allowed).Error; err != nil {
+			if err := a.DB.Model(&models.AdminUser{}).Scopes(middleware.Actor(c).Scope("admin_users.id", "admin_users.department_id")).Where("id IN ?", ids).Pluck("id", &allowed).Error; err != nil {
 				response.Report(c, err)
 				return
 			}
@@ -124,172 +126,159 @@ func (a *Controller) UserRoutes(g *route.Registrar) {
 			data = append(data, gin.H{"id": u.ID, "username": u.Username, "realname": u.Realname, "email": u.Email, "phone": u.Phone, "avatar": u.Avatar, "gender": u.Gender, "dept_id": u.DepartmentID, "status": u.Status, "remark": u.Remark, "role_ids": roles, "post_ids": posts, "login_time": u.LoginTime, "is_super": u.Super, "dashboard": u.Dashboard, "can_manage": slices.Contains(allowed, u.ID) && middleware.Actor(c).CanManageUser(&u), "created_at": u.CreatedAt})
 		}
 		response.Paginated(c, data, total, page, size)
-	})
-	g.Get("/users/{id}", middleware.Require(a.App, "dawn.users.list"), func(c *gin.Context) {
+	}
+	handlers.Show = func(c *gin.Context) {
 		id := response.ID(c)
 		if c.IsAborted() {
 			return
 		}
-		var user models.User
+		var user models.AdminUser
 		if err := a.DB.Preload("Roles").Preload("Posts").First(&user, id).Error; err != nil {
 			response.Report(c, err)
 			return
 		}
 		response.Respond(c, user)
-	})
-	for _, method := range []string{"POST", "PATCH", "PUT"} {
-		editing := method != "POST"
-		path, permission := "/users", "dawn.users.create"
+	}
+	write := func(c *gin.Context) {
+		editing := c.Request.Method != "POST"
+		var input userInput
 		if editing {
-			path, permission = "/users/{id}", "dawn.users.update"
-		}
-		g.Match([]string{method}, path, middleware.Require(a.App, permission), func(c *gin.Context) {
-			var input userInput
-			if editing {
-				id := response.ID(c)
-				if c.IsAborted() {
-					return
-				}
-				if err := query(c, a.DB).First(&input.User, id).Error; err != nil {
-					response.Report(c, err)
-					return
-				}
-				if !middleware.Actor(c).CanManageUser(&input.User) {
-					response.Fail(c, 403, "不能操作当前账号、超级管理员或同级以上用户")
-					return
-				}
-				for _, role := range input.Roles {
-					input.RoleIDs = append(input.RoleIDs, role.ID)
-				}
-				for _, post := range input.Posts {
-					input.PostIDs = append(input.PostIDs, post.ID)
-				}
-			}
-			writable := []string{"username", "realname", "email", "phone", "avatar", "gender", "department_id", "status", "remark", "password", "role_ids", "post_ids"}
-			if editing {
-				writable = slices.DeleteFunc(writable, func(field string) bool { return field == "password" })
-			}
-			selected := BindResourceInput(a.DB, c, &input, writable)
-			if selected == nil {
+			id := response.ID(c)
+			if c.IsAborted() {
 				return
 			}
-			if c.Request.Method == "PUT" {
-				selected = writable
-			}
-			if input.Status != models.Enabled && input.Status != models.Disabled {
-				response.Fail(c, 422, "账号状态无效")
-				return
-			}
-			if slices.Contains(selected, "role_ids") {
-				if err := a.CheckRoles(middleware.Actor(c), input.RoleIDs); err != nil {
-					response.Report(c, err, 403)
-					return
-				}
-			}
-			if input.DepartmentID > 0 {
-				var count int64
-				if err := a.DB.Model(&models.Department{}).Where("id = ?", input.DepartmentID).Count(&count).Error; err != nil {
-					response.Report(c, err)
-					return
-				}
-				if count == 0 {
-					response.Fail(c, 422, "部门不存在")
-					return
-				}
-			}
-			departments, all, err := middleware.Actor(c).Departments(a.DB)
-			if err != nil {
+			if err := query(c, a.DB).First(&input.AdminUser, id).Error; err != nil {
 				response.Report(c, err)
 				return
 			}
-			if !all && !slices.Contains(departments, input.DepartmentID) {
-				response.Fail(c, 403, "没有权限操作该部门数据")
+			if !middleware.Actor(c).CanManageUser(&input.AdminUser) {
+				response.Fail(c, 403, "不能操作当前账号、超级管理员或同级以上用户")
 				return
 			}
-			if editing {
-				id := response.ID(c)
-				if c.IsAborted() {
-					return
-				}
-				input.ID = id
-			} else if input.Password == "" {
+			for _, role := range input.Roles {
+				input.RoleIDs = append(input.RoleIDs, role.ID)
+			}
+			for _, post := range input.Posts {
+				input.PostIDs = append(input.PostIDs, post.ID)
+			}
+		}
+		writable := []string{"username", "realname", "email", "phone", "avatar", "gender", "department_id", "status", "remark", "password", "role_ids", "post_ids"}
+		if editing {
+			writable = slices.DeleteFunc(writable, func(field string) bool { return field == "password" })
+		}
+		selected := BindResourceInput(a.DB, c, &input, writable)
+		if selected == nil {
+			return
+		}
+		if c.Request.Method == "PUT" {
+			selected = writable
+		}
+		if input.Status != models.Enabled && input.Status != models.Disabled {
+			response.Fail(c, 422, "账号状态无效")
+			return
+		}
+		if slices.Contains(selected, "role_ids") {
+			if err := a.CheckRoles(middleware.Actor(c), input.RoleIDs); err != nil {
+				response.Report(c, err, 403)
+				return
+			}
+		}
+		if input.DepartmentID > 0 {
+			var count int64
+			if err := a.DB.Model(&models.Department{}).Where("id = ?", input.DepartmentID).Count(&count).Error; err != nil {
+				response.Report(c, err)
+				return
+			}
+			if count == 0 {
+				response.Fail(c, 422, "部门不存在")
+				return
+			}
+		}
+		departments, all, err := middleware.Actor(c).Departments(a.DB)
+		if err != nil {
+			response.Report(c, err)
+			return
+		}
+		if !all && !slices.Contains(departments, input.DepartmentID) {
+			response.Fail(c, 403, "没有权限操作该部门数据")
+			return
+		}
+		if !editing {
+			if input.Password == "" {
 				response.Fail(c, 422, "创建账号必须填写密码")
 				return
 			}
-			password := ""
-			if input.Password != "" {
-				hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
-				if err != nil {
-					response.Report(c, err)
-					return
-				}
-				password = string(hash)
-			}
-			err = a.DB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-				fields := slices.DeleteFunc(slices.Clone(selected), func(field string) bool { return field == "role_ids" || field == "post_ids" || field == "password" })
-				if password != "" {
-					input.User.Password = password
-					fields = append(fields, "password")
-				}
-				if editing {
-					if err := tx.Model(&models.User{}).Where("id = ?", input.ID).Select(fields).Updates(&input.User).Error; err != nil {
-						return err
-					}
-				} else {
-					if err := CreateResource(tx, &input.User, []string{"username", "realname", "email", "phone", "avatar", "gender", "department_id", "status", "remark", "password"}, fields); err != nil {
-						return err
-					}
-				}
-				var roles []models.Role
-				if len(input.RoleIDs) > 0 {
-					if err := tx.Where("id IN ?", input.RoleIDs).Find(&roles).Error; err != nil {
-						return err
-					}
-				}
-				var posts []models.Post
-				if len(input.PostIDs) > 0 {
-					if err := tx.Where("id IN ?", input.PostIDs).Find(&posts).Error; err != nil {
-						return err
-					}
-				}
-				if slices.Contains(selected, "role_ids") {
-					if err := tx.Model(&input.User).Association("Roles").Replace(roles); err != nil {
-						return err
-					}
-				}
-				if slices.Contains(selected, "post_ids") {
-					if err := tx.Model(&input.User).Association("Posts").Replace(posts); err != nil {
-						return err
-					}
-				}
-				if editing && (password != "" || input.Status == models.Disabled) {
-					return tx.Delete(&models.Session{}, "user_id = ?", input.ID).Error
-				}
-				return nil
-			})
+			hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
 			if err != nil {
 				response.Report(c, err)
 				return
 			}
-			if err := a.ClearUserCaches(c.Request.Context(), input.ID); err != nil {
+			input.AdminUser.Password = string(hash)
+		}
+		err = a.DB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+			fields := slices.DeleteFunc(slices.Clone(selected), func(field string) bool { return field == "role_ids" || field == "post_ids" })
+			if editing {
+				if err := tx.Model(&models.AdminUser{}).Where("id = ?", input.ID).Select(fields).Updates(&input.AdminUser).Error; err != nil {
+					return err
+				}
+			} else {
+				if err := CreateResource(tx, &input.AdminUser, []string{"username", "realname", "email", "phone", "avatar", "gender", "department_id", "status", "remark", "password"}, fields); err != nil {
+					return err
+				}
+			}
+			var roles []models.Role
+			if len(input.RoleIDs) > 0 {
+				if err := tx.Where("id IN ?", input.RoleIDs).Find(&roles).Error; err != nil {
+					return err
+				}
+			}
+			var posts []models.Post
+			if len(input.PostIDs) > 0 {
+				if err := tx.Where("id IN ?", input.PostIDs).Find(&posts).Error; err != nil {
+					return err
+				}
+			}
+			if slices.Contains(selected, "role_ids") {
+				if err := tx.Model(&input.AdminUser).Association("Roles").Replace(roles); err != nil {
+					return err
+				}
+			}
+			if slices.Contains(selected, "post_ids") {
+				if err := tx.Model(&input.AdminUser).Association("Posts").Replace(posts); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			response.Report(c, err)
+			return
+		}
+		if editing && input.Status == models.Disabled {
+			if err := a.Sessions.RevokeUsers(c.Request.Context(), input.ID); err != nil {
 				response.Report(c, err)
 				return
 			}
-			if editing {
-				response.Respond(c, input.User)
-			} else {
-				response.Created(c, input.User, fmt.Sprintf("%s/%d", c.Request.URL.Path, input.ID))
-			}
-		})
+		}
+		if err := a.ClearUserCaches(c.Request.Context(), input.ID); err != nil {
+			response.Report(c, err)
+			return
+		}
+		if editing {
+			response.Respond(c, input.AdminUser)
+		} else {
+			response.Created(c, input.AdminUser, fmt.Sprintf("%s/%d", c.Request.URL.Path, input.ID))
+		}
 	}
-	remove := func(c *gin.Context) {
+	handlers.Store, handlers.Update = write, write
+	handlers.Destroy = func(c *gin.Context) {
 		ids := response.IDs(c)
 		if c.IsAborted() {
 			return
 		}
 		denied := ""
 		err := a.DB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-			var users []models.User
+			var users []models.AdminUser
 			if err := query(c, tx).Where("id IN ?", ids).Find(&users).Error; err != nil {
 				return err
 			}
@@ -302,10 +291,7 @@ func (a *Controller) UserRoutes(g *route.Registrar) {
 					return errors.New(denied)
 				}
 			}
-			if err := tx.Delete(&models.User{}, "id IN ?", ids).Error; err != nil {
-				return err
-			}
-			return tx.Delete(&models.Session{}, "user_id IN ?", ids).Error
+			return tx.Delete(&models.AdminUser{}, "id IN ?", ids).Error
 		})
 		if err != nil {
 			if denied != "" {
@@ -315,20 +301,23 @@ func (a *Controller) UserRoutes(g *route.Registrar) {
 			}
 			return
 		}
+		if err := a.Sessions.RevokeUsers(c.Request.Context(), ids...); err != nil {
+			response.Report(c, err)
+			return
+		}
 		if err := a.ClearUserCaches(c.Request.Context(), ids...); err != nil {
 			response.Report(c, err)
 			return
 		}
 		c.Status(204)
 	}
-	g.Delete("/users", middleware.Require(a.App, "dawn.users.delete"), remove)
-	g.Delete("/users/{id}", middleware.Require(a.App, "dawn.users.delete"), remove)
+
 	g.Put("/users/{id}/password", middleware.Require(a.App, "dawn.users.password"), func(c *gin.Context) {
 		id := response.ID(c)
 		if c.IsAborted() {
 			return
 		}
-		var user models.User
+		var user models.AdminUser
 		if err := query(c, a.DB).First(&user, id).Error; err != nil {
 			response.Report(c, err)
 			return
@@ -349,12 +338,11 @@ func (a *Controller) UserRoutes(g *route.Registrar) {
 			response.Report(c, err)
 			return
 		}
-		if err := a.DB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-			if err := tx.Model(&models.User{}).Where("id = ?", id).Update("password", string(hash)).Error; err != nil {
-				return err
-			}
-			return tx.Delete(&models.Session{}, "user_id = ?", id).Error
-		}); err != nil {
+		if err := a.DB.WithContext(c.Request.Context()).Model(&models.AdminUser{}).Where("id = ?", id).Update("password", string(hash)).Error; err != nil {
+			response.Report(c, err)
+			return
+		}
+		if err := a.Sessions.RevokeUsers(c.Request.Context(), id); err != nil {
 			response.Report(c, err)
 			return
 		}
@@ -374,7 +362,7 @@ func (a *Controller) UserRoutes(g *route.Registrar) {
 			if c.IsAborted() {
 				return
 			}
-			var user models.User
+			var user models.AdminUser
 			if err := query(c, a.DB).First(&user, id).Error; err != nil {
 				response.Report(c, err)
 				return
@@ -408,32 +396,48 @@ func (a *Controller) UserRoutes(g *route.Registrar) {
 		})
 	}
 	g.Get("/sessions", middleware.Require(a.App, "dawn.users.list"), func(c *gin.Context) {
-		rows := []models.Session{}
-		db := a.DB.Model(&models.Session{}).Where("expires_at > ?", time.Now().UnixMilli())
+		var userID uint
 		if !middleware.Actor(c).User.Super {
-			db = db.Where("user_id = ?", middleware.Actor(c).User.ID)
+			userID = middleware.Actor(c).User.ID
 		}
-		var total int64
-		if err := db.Session(&gorm.Session{}).Count(&total).Error; err != nil {
+		cursor, err := strconv.ParseUint(c.DefaultQuery("cursor", "0"), 10, 64)
+		if err != nil {
+			response.Fail(c, 422, "游标格式错误")
+			return
+		}
+		_, size := response.Page(c)
+		rows, next, err := a.Sessions.List(c.Request.Context(), userID, cursor, int64(size))
+		if err != nil {
 			response.Report(c, err)
 			return
 		}
-		page, size := response.Page(c)
-		if err := db.Order("created_at DESC, id DESC").Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
-			response.Report(c, err)
-			return
-		}
-		response.Paginated(c, rows, total, page, size)
+		slices.SortFunc(rows, func(a, b authsession.Record) int {
+			if n := cmp.Compare(b.CreatedAt, a.CreatedAt); n != 0 {
+				return n
+			}
+			return cmp.Compare(b.ID, a.ID)
+		})
+		c.JSON(200, gin.H{"data": rows, "meta": gin.H{"cursor": strconv.FormatUint(next, 10)}})
 	})
 	g.Delete("/sessions/{session}", middleware.Require(a.App, "dawn.users.update"), func(c *gin.Context) {
-		db := a.DB.Where("id = ?", c.Param("session"))
-		if !middleware.Actor(c).User.Super {
-			db = db.Where("user_id = ?", middleware.Actor(c).User.ID)
+		row, err := a.Sessions.Read(c.Request.Context(), c.Param("session"))
+		if errors.Is(err, authsession.ErrUnauthenticated) {
+			c.Status(204)
+			return
 		}
-		if err := db.Delete(&models.Session{}).Error; err != nil {
+		if err != nil {
+			response.Report(c, err)
+			return
+		}
+		if !middleware.Actor(c).User.Super && row.UserID != middleware.Actor(c).User.ID {
+			response.Fail(c, 403, "没有操作权限")
+			return
+		}
+		if err = a.Sessions.Revoke(c.Request.Context(), row.ID); err != nil {
 			response.Report(c, err)
 			return
 		}
 		c.Status(204)
 	})
+	RegisterResourceRoutes(a.App, g, "/users", "dawn.users", handlers)
 }

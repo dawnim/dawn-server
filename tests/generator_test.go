@@ -3,16 +3,13 @@ package tests
 import (
 	"archive/zip"
 	"bytes"
-	"crypto/rand"
 	"encoding/json"
 	"io"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/dawnim/dawn-server/app/admin"
 	"github.com/dawnim/dawn-server/app/models"
 )
 
@@ -36,14 +33,11 @@ func TestGeneratorUsesApplicationDirectories(t *testing.T) {
 	if err := a.DB.AutoMigrate(&generatedItem{}); err != nil {
 		t.Fatal(err)
 	}
-	user := models.User{Username: "generator", Super: true, Status: models.Enabled}
+	user := models.AdminUser{Username: "generator", Super: true, Status: models.Enabled}
 	if err := a.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
-	token := rand.Text()
-	if err := a.DB.Create(&models.Session{ID: rand.Text(), UserID: user.ID, AccessHash: admin.TokenHash(token), RefreshHash: rand.Text(), ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}).Error; err != nil {
-		t.Fatal(err)
-	}
+	_, token := testSession(t, a, user.ID)
 	handler, err := a.Handler()
 	if err != nil {
 		t.Fatal(err)
