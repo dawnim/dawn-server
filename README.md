@@ -55,6 +55,7 @@
 - [架构与目录](https://github.com/dawnim/dawn-simple/blob/main/docs/architecture.md)：项目结构、应用生命周期与扩展入口。
 - [网站动态开发实例](https://github.com/dawnim/dawn-simple/blob/main/docs/moments.md)：社区、图片、AI创作与实时聊天的完整业务示例。
 - [后端开发](https://github.com/dawnim/dawn-simple/blob/main/docs/backend.md) / [前端开发](https://github.com/dawnim/dawn-simple/blob/main/docs/frontend.md)：从接口、菜单到业务页面。
+- [Markdown 编辑器](https://github.com/dawnim/dawn-simple/blob/main/docs/editor.md) 介绍独立接入、图片上传、自定义工具与语法扩展。
 - [权限与数据范围](https://github.com/dawnim/dawn-simple/blob/main/docs/authorization.md)：角色授权、管理级别与数据归属。
 - [AI客服与业务扩展](https://github.com/dawnim/dawn-simple/blob/main/docs/ai.md) / [普通用户](https://github.com/dawnim/dawn-simple/blob/main/docs/users.md) / [GeoIP](https://github.com/dawnim/dawn-simple/blob/main/docs/geoip.md)。
 - [聊天与实时通信](https://github.com/dawnim/dawn-simple/blob/main/docs/chat.md)：消息收发、可靠投递与 WebSocket 扩展。
