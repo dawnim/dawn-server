@@ -35,7 +35,7 @@ type restRecord struct {
 
 type restImportRecord struct {
 	models.Base
-	Code      string `json:"code" gorm:"not null;uniqueIndex" binding:"required"`
+	Code      string `json:"code" gorm:"not null;uniqueIndex;type:varchar(191)" binding:"required"`
 	Name      string `json:"name" gorm:"not null" binding:"required"`
 	CreatedBy uint   `json:"created_by" gorm:"not null"`
 }
