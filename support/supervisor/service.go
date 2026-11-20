@@ -252,6 +252,8 @@ func (s *service) spawn(ctx context.Context) (*child, error) {
 		}
 	}
 	cmd := exec.Command(s.spec.Command[0], s.spec.Command[1:]...)
+	// 异常退出后子进程可能仍持有输出管道，限制 Wait 等待以便回收进程组。
+	cmd.WaitDelay = time.Second
 	cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr = s.spec.Dir, append(os.Environ(), s.spec.Env...), os.Stdout, os.Stderr
 	if s.socket != "" {
 		cmd.Env = append(cmd.Env, "DAWN_CONTROL_SOCKET="+s.socket)

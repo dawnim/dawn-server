@@ -4,10 +4,12 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"github.com/dawnim/dawn-server/support/geoip"
-	"github.com/dawnim/dawn-server/support/storage"
 	"strings"
 	"time"
+
+	"github.com/dawnim/dawn-server/support/clientip"
+	"github.com/dawnim/dawn-server/support/geoip"
+	"github.com/dawnim/dawn-server/support/storage"
 
 	"github.com/dawnim/dawn-server/support/i18n"
 
@@ -43,6 +45,28 @@ func (p AdminServiceProvider) Register(application pc.Application) error {
 		}
 		return definition, nil
 	}); err != nil {
+		return err
+	}
+	if err := application.Container().Singleton("dawn.clientip", func(r cc.Resolver) (any, error) {
+		raw, err := r.Make("config.default")
+		if err != nil {
+			return nil, err
+		}
+		cfg := raw.(*config.Config)
+		mode := cfg.GetString("app.server.client_ip_mode", "trusted")
+		headers := cfg.GetString("app.server.client_ip_headers", "X-Forwarded-For,X-Real-IP")
+		if mode == "simple" {
+			headers = cfg.GetString("app.server.client_ip_simple_headers", strings.Join(clientip.DefaultHeaders, ","))
+		}
+		return clientip.New(clientip.Config{
+			Mode:           mode,
+			Headers:        strings.Split(headers, ","),
+			TrustedProxies: strings.Split(cfg.GetString("app.server.trusted_proxies", ""), ","),
+			Cloudflare:     cfg.GetBool("app.server.cloudflare_proxies", false),
+			CloudFront:     cfg.GetBool("app.server.cloudfront_proxies", false),
+			Directory:      support.StoragePath("app", "clientip"),
+		})
+	}, container.WithCloser(func(r *clientip.Resolver) error { return r.Close() })); err != nil {
 		return err
 	}
 	if err := application.Container().Singleton("dawn.geoip", func(r cc.Resolver) (any, error) {
