@@ -170,6 +170,22 @@ func TestCustomerHTTPInboxAndConfiguration(t *testing.T) {
 	if ticket["ws_url"] != "ws://example.com:8851/" {
 		t.Fatal("direct visitor page did not receive the standalone WS address", ticket["ws_url"])
 	}
+	proxyRequest := httptest.NewRequest("POST", "/api/support/"+key+"/realtime-tickets", bytes.NewReader([]byte(`{}`)))
+	proxyRequest.Header.Set("Content-Type", "application/json")
+	proxyRequest.Header.Set("Authorization", "Bearer "+session.Token)
+	proxyRequest.Header.Set("X-Forwarded-Proto", "https")
+	proxyResponse := httptest.NewRecorder()
+	handler.ServeHTTP(proxyResponse, proxyRequest)
+	if proxyResponse.Code != 201 {
+		t.Fatalf("proxied realtime ticket: %d %s", proxyResponse.Code, proxyResponse.Body.String())
+	}
+	var proxyResult map[string]any
+	if err := json.Unmarshal(proxyResponse.Body.Bytes(), &proxyResult); err != nil {
+		t.Fatal(err)
+	}
+	if proxyResult["data"].(map[string]any)["ws_url"] != "wss://example.com/ws" {
+		t.Fatal("proxied visitor page did not receive the same-origin secure WS address", proxyResult["data"])
+	}
 
 	foreign, _, err := a.Customer.Open(ctx, key, "", customer.OpenInput{})
 	if err != nil {

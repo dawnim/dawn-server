@@ -41,6 +41,22 @@ func (a *Controller) customerSession(c *gin.Context) (customer.Session, bool) {
 	return s, true
 }
 
+func supportWebSocketURL(c *gin.Context, wsAddr, wsPath string) string {
+	if forwarded := strings.TrimSpace(strings.Split(c.GetHeader("X-Forwarded-Proto"), ",")[0]); forwarded != "" {
+		scheme := "ws"
+		if strings.EqualFold(forwarded, "https") {
+			scheme = "wss"
+		}
+		return (&url.URL{Scheme: scheme, Host: c.Request.Host, Path: "/ws"}).String()
+	}
+	_, port, _ := net.SplitHostPort(wsAddr)
+	scheme := "ws"
+	if c.Request.TLS != nil {
+		scheme = "wss"
+	}
+	return (&url.URL{Scheme: scheme, Host: net.JoinHostPort((&url.URL{Host: c.Request.Host}).Hostname(), port), Path: wsPath}).String()
+}
+
 func (a *Controller) SupportPublicRoutes() {
 	route.Get("/chat/{key}", func(c *gin.Context) {
 		c.Header("Referrer-Policy", "no-referrer")
@@ -266,12 +282,7 @@ func (a *Controller) SupportPublicRoutes() {
 		}
 		wsURL := config.GetString("dawn.ws_url")
 		if wsURL == "" {
-			_, port, _ := net.SplitHostPort(a.Options.WSAddr)
-			scheme := "ws"
-			if c.Request.TLS != nil {
-				scheme = "wss"
-			}
-			wsURL = (&url.URL{Scheme: scheme, Host: net.JoinHostPort((&url.URL{Host: c.Request.Host}).Hostname(), port), Path: a.Options.WSPath}).String()
+			wsURL = supportWebSocketURL(c, a.Options.WSAddr, a.Options.WSPath)
 		}
 		response.Created(c, gin.H{"ticket": ticket, "ws_url": wsURL}, "/api/support/"+c.Param("key"))
 	})
