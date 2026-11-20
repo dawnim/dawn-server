@@ -223,7 +223,25 @@ func (m *Manager) ProcessRun(ctx context.Context, id uint) (err error) {
 				return ErrConflict
 			}
 		}
-		err = m.DB.WithContext(runCtx).Migrator().DropTable(table)
+		id, parseErr := strconv.ParseUint(input.Profile, 10, 64)
+		if parseErr == nil && id > 0 {
+			var index models.KnowledgeIndex
+			if err = m.DB.WithContext(runCtx).First(&index, id).Error; err != nil {
+				return err
+			}
+			if index.Driver == "portable" {
+				err = m.DB.WithContext(runCtx).Where("index_id = ?", id).Delete(&models.KnowledgeVector{}).Error
+			} else {
+				err = m.DB.WithContext(runCtx).Migrator().DropTable(table)
+			}
+			if err == nil {
+				err = m.DB.WithContext(runCtx).Model(&index).Updates(map[string]any{"status": "cleaned", "error": ""}).Error
+			} else {
+				_ = m.DB.WithContext(context.WithoutCancel(runCtx)).Model(&index).Update("error", err.Error()).Error
+			}
+		} else {
+			err = m.DB.WithContext(runCtx).Migrator().DropTable(table)
+		}
 	case "reply", "draft", "agent":
 		return m.generate(runCtx, &run, lease)
 	default:

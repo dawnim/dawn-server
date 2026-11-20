@@ -2,12 +2,19 @@ package controllers
 
 import (
 	"cmp"
+	"context"
+	"encoding/json"
+	"net"
+	"net/http"
 	"os"
 	"runtime"
+	"strconv"
 	"time"
 
 	"github.com/dawnim/dawn-server/app/admin/middleware"
 	"github.com/dawnim/dawn-server/app/admin/response"
+	"github.com/dawnim/dawn-server/app/models"
+	"github.com/dawnim/dawn-server/support/supervisor"
 	"github.com/gin-gonic/gin"
 	"github.com/prismgo/framework/config"
 	"github.com/prismgo/framework/route"
@@ -66,7 +73,43 @@ func (a *Controller) ServerRoutes(g *route.Registrar) {
 		collect("uptime_seconds", (time.Now().UnixMilli()-started)/1000, e)
 		processCPU, e := current.PercentWithContext(ctx, 100*time.Millisecond)
 		collect("process_cpu_percent", processCPU, e)
-		response.Respond(c, gin.H{"pid": os.Getpid(), "system": system, "unavailable": unavailable, "name": a.Options.Name, "go": runtime.Version(), "os": runtime.GOOS, "arch": runtime.GOARCH, "cpus": runtime.NumCPU(), "goroutines": runtime.NumGoroutine(), "heap_bytes": memory.HeapAlloc, "heap_sys": memory.HeapSys, "system_bytes": memory.Sys, "db": sqlDB.Stats(), "driver": a.DB.Dialector.Name()})
+		embedding := gin.H{"enabled": config.GetBool("dawn.embedding.enabled", false)}
+		if embedding["enabled"] == true {
+			socket := support.BasePath(config.GetString("dawn.runtime_directory", "storage/framework"), "dawn.sock")
+			statusCtx, cancelStatus := context.WithTimeout(ctx, time.Second)
+			defer cancelStatus()
+			status, _, statusErr := supervisor.Control(statusCtx, socket, "embedding", "status")
+			if statusErr != nil {
+				embedding["error"] = statusErr.Error()
+			} else if len(status.Services) > 0 {
+				embedding["service"] = status.Services[0]
+			}
+			host := config.GetString("dawn.embedding.host", "127.0.0.1")
+			if host == "0.0.0.0" || host == "::" {
+				host = "127.0.0.1"
+			}
+			probeCtx, cancel := context.WithTimeout(ctx, time.Second)
+			defer cancel()
+			req, _ := http.NewRequestWithContext(probeCtx, http.MethodGet, "http://"+net.JoinHostPort(host, strconv.Itoa(config.GetInt("dawn.embedding.port", 8852)))+"/health", nil)
+			res, probeErr := http.DefaultClient.Do(req)
+			if probeErr == nil {
+				defer res.Body.Close()
+				var health map[string]any
+				if res.StatusCode == http.StatusOK && json.NewDecoder(res.Body).Decode(&health) == nil {
+					embedding["health"] = health
+				}
+			}
+		}
+		var indexes []struct {
+			models.KnowledgeIndex
+			AppName string `json:"app_name"`
+		}
+		if indexErr := a.DB.WithContext(ctx).Table("knowledge_indexes").Select("knowledge_indexes.*, support_apps.name AS app_name").Joins("JOIN support_apps ON support_apps.id = knowledge_indexes.app_id AND support_apps.deleted_at = 0").Where("knowledge_indexes.status IN ?", []string{"active", "building", "failed", "cleanup"}).Order("knowledge_indexes.id DESC").Scan(&indexes).Error; indexErr != nil {
+			embedding["indexes_error"] = indexErr.Error()
+		} else {
+			embedding["indexes"] = indexes
+		}
+		response.Respond(c, gin.H{"pid": os.Getpid(), "system": system, "unavailable": unavailable, "name": a.Options.Name, "go": runtime.Version(), "os": runtime.GOOS, "arch": runtime.GOARCH, "cpus": runtime.NumCPU(), "goroutines": runtime.NumGoroutine(), "heap_bytes": memory.HeapAlloc, "heap_sys": memory.HeapSys, "system_bytes": memory.Sys, "db": sqlDB.Stats(), "driver": a.DB.Dialector.Name(), "embedding": embedding})
 	})
 
 }

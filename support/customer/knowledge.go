@@ -3,8 +3,6 @@ package customer
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -18,6 +16,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -66,6 +65,7 @@ func (m *Manager) RegisterRetriever(name string, retriever Retriever) {
 
 // IndexSpec固定查询所需的模型、维度和连接信息；Credential保存加密后的向量凭证。
 type IndexSpec struct {
+	ID         uint   `json:"id,omitempty"`
 	Credential string `json:"credential"`
 	Profile    string `json:"profile"`
 	Driver     string `json:"driver"`
@@ -84,6 +84,9 @@ type vectorRecord struct {
 }
 
 func indexTable(profile string) (string, error) {
+	if id, err := strconv.ParseUint(profile, 10, 64); err == nil && id > 0 {
+		return "knowledge_vectors_" + profile, nil
+	}
 	value, err := hex.DecodeString(profile)
 	if err != nil || len(value) != 16 {
 		return "", ErrInvalid
@@ -211,9 +214,13 @@ func (m *Manager) Search(ctx context.Context, appID uint, question string) ([]Ev
 	}
 	if cfg.ActiveIndex != nil && cfg.ActiveIndex.Driver != "mariadb" {
 		spec := *cfg.ActiveIndex
-		table, e := indexTable(spec.Profile)
-		if e != nil {
-			return nil, e
+		table := "knowledge_vectors"
+		if spec.ID == 0 {
+			var e error
+			table, e = indexTable(spec.Profile)
+			if e != nil {
+				return nil, e
+			}
 		}
 		credential, e := encryption.DecryptString(ctx, spec.Credential)
 		var vector []float32
@@ -222,7 +229,11 @@ func (m *Manager) Search(ctx context.Context, appID uint, question string) ([]Ev
 		}
 		if e == nil {
 			var vectors []vectorRecord
-			e = m.DB.WithContext(ctx).Table(table).Where("app_id = ?", appID).Find(&vectors).Error
+			query := m.DB.WithContext(ctx).Table(table).Where("app_id = ?", appID)
+			if spec.ID != 0 {
+				query = query.Where("index_id = ?", spec.ID)
+			}
+			e = query.Find(&vectors).Error
 			if e == nil {
 				for _, row := range vectors {
 					if len(row.Embedding) != len(vector)*4 {
@@ -332,7 +343,7 @@ func (m *Manager) Search(ctx context.Context, appID uint, question string) ([]Ev
 }
 
 // BuildIndex 新代际全部完成后才切换活动配置，模型与维度不混用。
-func (m *Manager) BuildIndex(ctx context.Context, appID uint) error {
+func (m *Manager) BuildIndex(ctx context.Context, appID uint) (err error) {
 	app, cfg, secrets, err := m.App(ctx, appID)
 	if err != nil {
 		return err
@@ -366,24 +377,38 @@ func (m *Manager) BuildIndex(ctx context.Context, appID uint) error {
 	if spec.Dimensions < 1 || spec.Dimensions > 16383 {
 		return ErrInvalid
 	}
-	sum := sha256.Sum256(Raw(map[string]any{"model": spec, "generation": rand.Text()}))
-	spec.Profile = hex.EncodeToString(sum[:16])
-	table, _ := indexTable(spec.Profile)
-	if spec.Driver == "mariadb" {
-		err = m.DB.WithContext(ctx).Exec(fmt.Sprintf("CREATE TABLE `%s` (entry_id BIGINT UNSIGNED PRIMARY KEY, app_id BIGINT UNSIGNED NOT NULL, version BIGINT UNSIGNED NOT NULL, content_hash CHAR(64) NOT NULL, embedding VECTOR(%d) NOT NULL, INDEX(app_id), VECTOR INDEX(embedding) DISTANCE=cosine) COMMENT='系统:知识向量索引表'", table, spec.Dimensions)).Error
-	} else {
-		err = m.DB.WithContext(ctx).Table(table).Migrator().CreateTable(&vectorRecord{})
-	}
-	if err != nil {
+	index := models.KnowledgeIndex{AppID: appID, Driver: spec.Driver, Model: spec.Model, Dimensions: spec.Dimensions, Status: "building", Total: len(entries)}
+	if err = m.DB.WithContext(ctx).Create(&index).Error; err != nil {
 		return err
 	}
+	spec.ID = index.ID
+	spec.Profile = strconv.FormatUint(uint64(index.ID), 10)
+	table, _ := indexTable(spec.Profile)
 	complete := false
+	tableCreated := false
 	defer func() {
 		if !complete {
-			_ = m.DB.WithContext(context.WithoutCancel(ctx)).Table(table).Migrator().DropTable(table)
+			cleanup := m.DB.WithContext(context.WithoutCancel(ctx))
+			if spec.Driver == "mariadb" && tableCreated {
+				_ = cleanup.Migrator().DropTable(table)
+			} else if spec.Driver != "mariadb" {
+				_ = cleanup.Where("index_id = ?", index.ID).Delete(&models.KnowledgeVector{}).Error
+			}
+			message := "索引构建未完成"
+			if err != nil {
+				message = err.Error()
+			}
+			_ = cleanup.Model(&index).Updates(map[string]any{"status": "failed", "error": message}).Error
 		}
 	}()
-	for _, entry := range entries {
+	if spec.Driver == "mariadb" {
+		err = m.DB.WithContext(ctx).Exec(fmt.Sprintf("CREATE TABLE `%s` (entry_id BIGINT UNSIGNED PRIMARY KEY, app_id BIGINT UNSIGNED NOT NULL, version BIGINT UNSIGNED NOT NULL, content_hash CHAR(64) NOT NULL, embedding VECTOR(%d) NOT NULL, INDEX(app_id), VECTOR INDEX(embedding) DISTANCE=cosine) COMMENT='系统:知识向量索引表'", table, spec.Dimensions)).Error
+		if err != nil {
+			return err
+		}
+		tableCreated = true
+	}
+	for i, entry := range entries {
 		v, e := m.embed(ctx, spec, false, entry.Question+"\n"+entry.Answer, secrets.EmbeddingAPIKey)
 		if e != nil {
 			return e
@@ -395,10 +420,15 @@ func (m *Manager) BuildIndex(ctx context.Context, appID uint) error {
 			if e2 != nil {
 				return e2
 			}
-			e = m.DB.WithContext(ctx).Table(table).Create(&vectorRecord{EntryID: entry.ID, AppID: appID, Version: entry.Version, ContentHash: TokenHash(entry.Question + "\n" + entry.Answer), Embedding: b}).Error
+			e = m.DB.WithContext(ctx).Create(&models.KnowledgeVector{IndexID: index.ID, EntryID: entry.ID, AppID: appID, Version: entry.Version, ContentHash: TokenHash(entry.Question + "\n" + entry.Answer), Embedding: b}).Error
 		}
 		if e != nil {
 			return e
+		}
+		if (i+1)%10 == 0 || i+1 == len(entries) {
+			if err = m.DB.WithContext(ctx).Model(&index).Update("completed", i+1).Error; err != nil {
+				return err
+			}
 		}
 	}
 	previousIndex := cfg.ActiveIndex
@@ -429,7 +459,15 @@ func (m *Manager) BuildIndex(ctx context.Context, appID uint) error {
 		if result.RowsAffected != 1 {
 			return ErrConflict
 		}
+		if e := tx.Model(&index).Update("status", "active").Error; e != nil {
+			return e
+		}
 		if previousIndex != nil {
+			if previousIndex.ID != 0 {
+				if e := tx.Model(&models.KnowledgeIndex{}).Where("id = ?", previousIndex.ID).Update("status", "cleanup").Error; e != nil {
+					return e
+				}
+			}
 			if e := tx.Create(&models.AIRun{AppID: appID, Kind: "index_cleanup", Input: Raw(map[string]any{"profile": previousIndex.Profile}), AvailableAt: time.Now().Add(time.Hour).UnixMilli(), DeadlineAt: time.Now().Add(6 * time.Hour).UnixMilli()}).Error; e != nil {
 				return e
 			}

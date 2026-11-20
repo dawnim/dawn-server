@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 import torch
 from fastapi import FastAPI, HTTPException
+from huggingface_hub import scan_cache_dir
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 
@@ -17,6 +18,14 @@ async def lifespan(app: FastAPI):
     torch.set_num_threads(int(os.getenv("EMBEDDING_THREADS", "4")))
     app.state.model = SentenceTransformer(MODEL, device=os.getenv("EMBEDDING_DEVICE", "cpu"))
     app.state.model.max_seq_length = int(os.getenv("EMBEDDING_MAX_LENGTH", "2048"))
+    app.state.cache_bytes = None
+    app.state.model_bytes = None
+    try:
+        cache = scan_cache_dir(os.path.join(os.environ.get("HF_HOME", ""), "hub"))
+        app.state.cache_bytes = cache.size_on_disk
+        app.state.model_bytes = next((repo.size_on_disk for repo in cache.repos if repo.repo_id == MODEL), None)
+    except OSError:
+        pass
     yield
 
 
@@ -25,7 +34,12 @@ app = FastAPI(lifespan=lifespan)
 
 @app.get("/health")
 def health():
-    return {"model": MODEL, "ready": True}
+    return {"model": MODEL, "ready": True,
+            "dimensions": app.state.model.get_sentence_embedding_dimension(),
+            "device": str(app.state.model.device),
+            "max_length": app.state.model.max_seq_length,
+            "threads": torch.get_num_threads(), "model_bytes": app.state.model_bytes,
+            "cache_bytes": app.state.cache_bytes}
 
 
 class Request(BaseModel):

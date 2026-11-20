@@ -382,6 +382,33 @@ type SupportSession struct {
 
 func (SupportSession) TableName() string { return "support_sessions" }
 
+type KnowledgeIndex struct {
+	ID         uint   `gorm:"primaryKey"`
+	AppID      uint   `gorm:"not null;index;comment:所属客服应用ID"`
+	Driver     string `gorm:"not null;size:24;comment:索引存储驱动"`
+	Model      string `gorm:"not null;size:255;comment:向量模型"`
+	Dimensions int    `gorm:"not null;comment:向量维度"`
+	Status     string `gorm:"not null;size:24;index;comment:索引状态"`
+	Total      int    `gorm:"not null;default:0;comment:知识条目总数"`
+	Completed  int    `gorm:"not null;default:0;comment:已构建条目数"`
+	Error      string `gorm:"not null;type:text;comment:构建或清理错误"`
+	CreatedAt  int64  `gorm:"not null;autoCreateTime:milli"`
+	UpdatedAt  int64  `gorm:"not null;autoUpdateTime:milli"`
+}
+
+func (KnowledgeIndex) TableName() string { return "knowledge_indexes" }
+
+type KnowledgeVector struct {
+	IndexID     uint   `gorm:"not null;primaryKey"`
+	EntryID     uint   `gorm:"not null;primaryKey"`
+	AppID       uint   `gorm:"not null;index"`
+	Version     uint   `gorm:"not null"`
+	ContentHash string `gorm:"not null;size:64"`
+	Embedding   []byte `gorm:"not null"`
+}
+
+func (KnowledgeVector) TableName() string { return "knowledge_vectors" }
+
 // Definition 返回完整的内置目标结构，业务可追加、替换或删除任何表定义。
 func Definition() *schema.Definition {
 	return &schema.Definition{Tables: map[string]schema.Table{
@@ -408,6 +435,8 @@ func Definition() *schema.Definition {
 		(SupportSession{}).TableName():   {Model: &SupportSession{}, Comment: "系统:客服接待表"},
 		(KnowledgeSource{}).TableName():  {Model: &KnowledgeSource{}, Comment: "系统:知识来源表"},
 		(KnowledgeEntry{}).TableName():   {Model: &KnowledgeEntry{}, Comment: "系统:知识条目表"},
+		(KnowledgeIndex{}).TableName():   {Model: &KnowledgeIndex{}, Comment: "系统:知识索引表"},
+		(KnowledgeVector{}).TableName():  {Model: &KnowledgeVector{}, Comment: "系统:知识向量表"},
 		(AIRun{}).TableName():            {Model: &AIRun{}, Comment: "系统:AI执行表"},
 	}, Keep: []string{"migrations", "sqlite_*", "knowledge_vectors_*"}}
 }

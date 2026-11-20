@@ -39,7 +39,11 @@ func Control(ctx context.Context, socket, selection, action string) (Response, b
 		return result, !socketAbsent(err), err
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(3 * time.Minute))
+	deadline := time.Now().Add(3 * time.Minute)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	_ = conn.SetDeadline(deadline)
 	if err := json.NewEncoder(conn).Encode(request{Selection: selection, Action: action}); err != nil {
 		return result, true, err
 	}
